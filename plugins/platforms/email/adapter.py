@@ -927,10 +927,13 @@ class EmailAdapter(BasePlatformAdapter):
         """Send an email via SMTP. Runs in executor thread."""
         msg = MIMEMultipart()
         msg["From"] = self._address
-        msg["To"] = to_addr
 
-        # Thread context for reply
-        ctx = self._thread_context.get(to_addr, {})
+        # Extract the actual email address from compound chat_id (e.g. "user@example.com:thread_slug")
+        recipient = to_addr.split(":")[0] if ":" in to_addr else to_addr
+        msg["To"] = recipient
+
+        # Thread context for reply — keyed by plain email, not compound ID
+        ctx = self._thread_context.get(recipient, {})
         subject = ctx.get("subject", "Hermes Agent")
         if not subject.startswith("Re:"):
             subject = f"Re: {subject}"
@@ -1042,9 +1045,12 @@ class EmailAdapter(BasePlatformAdapter):
         """Send an email with multiple file attachments via SMTP."""
         msg = MIMEMultipart()
         msg["From"] = self._address
-        msg["To"] = to_addr
 
-        ctx = self._thread_context.get(to_addr, {})
+        # Extract the actual email address from compound chat_id
+        recipient = to_addr.split(":")[0] if ":" in to_addr else to_addr
+        msg["To"] = recipient
+
+        ctx = self._thread_context.get(recipient, {})
         subject = ctx.get("subject", "Hermes Agent")
         if not subject.startswith("Re:"):
             subject = f"Re: {subject}"
@@ -1122,9 +1128,12 @@ class EmailAdapter(BasePlatformAdapter):
         """Send an email with a file attachment via SMTP."""
         msg = MIMEMultipart()
         msg["From"] = self._address
-        msg["To"] = to_addr
 
-        ctx = self._thread_context.get(to_addr, {})
+        # Extract the actual email address from compound chat_id
+        recipient = to_addr.split(":")[0] if ":" in to_addr else to_addr
+        msg["To"] = recipient
+
+        ctx = self._thread_context.get(recipient, {})
         subject = ctx.get("subject", "Hermes Agent")
         if not subject.startswith("Re:"):
             subject = f"Re: {subject}"
