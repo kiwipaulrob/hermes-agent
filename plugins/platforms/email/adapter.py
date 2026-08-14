@@ -507,6 +507,8 @@ def _extract_attachments(
 class EmailAdapter(BasePlatformAdapter):
     """Email gateway adapter using IMAP (receive) and SMTP (send)."""
 
+    splits_long_messages = True  # send() handles full payload; no platform char limit
+
     # Per-account snapshot of seen UIDs, surviving adapter recreation.
     # The gateway's reconnect watcher builds a FRESH adapter instance for
     # each retry; without this, connect(is_reconnect=True) would re-mark the
@@ -1046,6 +1048,21 @@ class EmailAdapter(BasePlatformAdapter):
         body = msg_data["body"].strip()
         attachments = msg_data["attachments"]
 
+        # Subject-based session isolation (#26277/#27804): derive a stable
+        # slug from the normalized subject and use it as thread_id so each
+        # distinct subject gets its own session, while replies (Re:/Fwd:/Fw:
+        # prefixes stripped) rejoin the same thread. Empty subjects fall back
+        # to the sender-only session (previous behaviour).
+        _subject_slug = None
+        if subject:
+            _inner = re.sub(r"(?i)^(re|fwd|fw)[-:\s]*\d*[-:\s]*", "", subject)
+            # Strip stacked prefixes (e.g. "Re: Fw: Meeting Notes")
+            while re.match(r"(?i)^(re|fwd|fw)[-:\s]", _inner):
+                _inner = re.sub(r"(?i)^(re|fwd|fw)[-:\s]*\d*[-:\s]*", "", _inner)
+            _subject_slug = (
+                re.sub(r"[^a-z0-9]+", "-", _inner.lower()).strip("-")[:80] or None
+            )
+
         # Build message text: include subject as context
         text = body
         if subject and not subject.startswith("Re:"):
@@ -1069,11 +1086,19 @@ class EmailAdapter(BasePlatformAdapter):
                 # only classification that surfaces both.
                 msg_type = MessageType.DOCUMENT
 
-        # Store thread context for reply threading
-        self._thread_context[sender_addr] = {
+        # Store thread context for reply threading — keyed by the compound
+        # session id (sender:slug) so a reply carries THIS thread's subject,
+        # plus the plain sender for legacy sender-only sessions.
+        _ctx_key = f"{sender_addr}:{_subject_slug}" if _subject_slug else sender_addr
+        self._thread_context[_ctx_key] = {
             "subject": subject,
             "message_id": msg_data["message_id"],
         }
+        if _subject_slug:
+            self._thread_context[sender_addr] = {
+                "subject": subject,
+                "message_id": msg_data["message_id"],
+            }
 
         source = self.build_source(
             chat_id=sender_addr,
@@ -1081,6 +1106,7 @@ class EmailAdapter(BasePlatformAdapter):
             chat_type="dm",
             user_id=sender_addr,
             user_name=msg_data["sender_name"] or sender_addr,
+            thread_id=_subject_slug,
         )
 
         event = MessageEvent(
@@ -1133,10 +1159,13 @@ class EmailAdapter(BasePlatformAdapter):
         """Send an email via SMTP. Runs in executor thread."""
         msg = MIMEMultipart()
         msg["From"] = self._address
-        msg["To"] = to_addr
+        # Extract the actual email address from compound chat_id
+        recipient = to_addr.split(":")[0] if ":" in to_addr else to_addr
+        msg["To"] = recipient
 
-        # Thread context for reply
-        ctx = self._thread_context.get(to_addr, {})
+        # Thread context for reply — compound (sender:slug) first so the
+        # reply carries THIS thread's subject, plain sender as legacy fallback
+        ctx = self._thread_context.get(to_addr) or self._thread_context.get(recipient, {})
         subject = ctx.get("subject", "Hermes Agent")
         if not subject.startswith("Re:"):
             subject = f"Re: {subject}"
@@ -1169,6 +1198,18 @@ class EmailAdapter(BasePlatformAdapter):
 
     async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         """Email has no typing indicator — no-op."""
+
+    def format_tool_event(self, event: Any, *, mode: str = "all",
+                          preview_max_len: int = 40) -> None:
+        """Suppress tool-progress chrome for email delivery.
+
+        Email is a plain-text, non-editable medium — there is no way to
+        update a previously sent message, so emitting a separate email per
+        tool call would spam the user's inbox. Return None to drop all
+        tool-progress events; the final assistant response is the only
+        message sent (#27804).
+        """
+        return None
 
     async def send_image(
         self,
@@ -1248,9 +1289,11 @@ class EmailAdapter(BasePlatformAdapter):
         """Send an email with multiple file attachments via SMTP."""
         msg = MIMEMultipart()
         msg["From"] = self._address
-        msg["To"] = to_addr
+        # Extract the actual email address from compound chat_id
+        recipient = to_addr.split(":")[0] if ":" in to_addr else to_addr
+        msg["To"] = recipient
 
-        ctx = self._thread_context.get(to_addr, {})
+        ctx = self._thread_context.get(to_addr) or self._thread_context.get(recipient, {})
         subject = ctx.get("subject", "Hermes Agent")
         if not subject.startswith("Re:"):
             subject = f"Re: {subject}"
@@ -1328,9 +1371,11 @@ class EmailAdapter(BasePlatformAdapter):
         """Send an email with a file attachment via SMTP."""
         msg = MIMEMultipart()
         msg["From"] = self._address
-        msg["To"] = to_addr
+        # Extract the actual email address from compound chat_id
+        recipient = to_addr.split(":")[0] if ":" in to_addr else to_addr
+        msg["To"] = recipient
 
-        ctx = self._thread_context.get(to_addr, {})
+        ctx = self._thread_context.get(to_addr) or self._thread_context.get(recipient, {})
         subject = ctx.get("subject", "Hermes Agent")
         if not subject.startswith("Re:"):
             subject = f"Re: {subject}"
@@ -1424,7 +1469,11 @@ async def _standalone_send(
     try:
         msg = MIMEText(message, "plain", "utf-8")
         msg["From"] = address
-        msg["To"] = chat_id
+        # Extract the actual email address from compound chat_id (cron
+        # delivery routes thread-scoped origins like
+        # "user@gmail.com:thread_id" here — Gmail rejects with 555 5.5.2)
+        recipient = chat_id.split(":")[0] if ":" in chat_id else chat_id
+        msg["To"] = recipient
         msg["Subject"] = "Hermes Agent"
         msg["Date"] = formatdate(localtime=True)
 

@@ -1130,9 +1130,44 @@ def memory_tool(
     return json.dumps(result, ensure_ascii=False)
 
 
-def check_memory_requirements() -> bool:
-    """Memory tool has no external requirements -- always available."""
+def builtin_memory_enabled() -> bool:
+    """Effective built-in (MEMORY.md/USER.md) store enablement for this install.
+
+    The built-in store exists iff memory.memory_enabled or
+    memory.user_profile_enabled is true — the same predicate that creates
+    ``agent._memory_store`` (agent/agent_init.py). Reads the *raw* user config
+    so the runtime check_fn and the store-creation path agree. Explicit user
+    settings win; a user with no memory section gets the default (built-in
+    enabled). Fail-open True on config read errors — never hide memory on an
+    unrelated failure.
+    """
+    try:
+        from hermes_cli.config import read_raw_config_readonly
+
+        mem = read_raw_config_readonly().get("memory") or {}
+    except Exception:
+        return True  # fail open — never hide memory on config read errors
+    if any(
+        k in mem for k in ("memory_enabled", "user_profile_enabled")
+    ):
+        return bool(
+            mem.get("memory_enabled", False)
+            or mem.get("user_profile_enabled", False)
+        )
     return True
+
+
+def check_memory_requirements() -> bool:
+    """Memory tool is advertised only when the built-in store can actually work.
+
+    Matches the ``agent._memory_store`` creation predicate in agent_init. When
+    an external memory provider (memory.provider) is active, the provider's own
+    tools serve memory; advertising the built-in tool would hand agents a tool
+    that can only fail ("Memory is not available") and invite a wrong config
+    change (see #60805, #32624). The ``memory`` toolset stays enabled so
+    provider tools (memos_*) pass the toolset gate; only this tool is filtered.
+    """
+    return builtin_memory_enabled()
 
 
 def apply_memory_pending(payload: Dict[str, Any], store: "MemoryStore") -> Dict[str, Any]:
