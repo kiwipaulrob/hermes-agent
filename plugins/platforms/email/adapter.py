@@ -1263,8 +1263,9 @@ class EmailAdapter(BasePlatformAdapter):
         """Send an email reply to the given address."""
         try:
             loop = asyncio.get_running_loop()
+            thread_id = (metadata or {}).get("thread_id")
             message_id = await loop.run_in_executor(
-                None, self._send_email, chat_id, content, reply_to
+                None, self._send_email, chat_id, content, reply_to, thread_id
             )
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
@@ -1286,6 +1287,7 @@ class EmailAdapter(BasePlatformAdapter):
         to_addr: str,
         body: str,
         reply_to_msg_id: Optional[str] = None,
+        thread_id: Optional[str] = None,
     ) -> str:
         """Send an email via SMTP. Runs in executor thread."""
         msg = MIMEMultipart()
@@ -1294,9 +1296,17 @@ class EmailAdapter(BasePlatformAdapter):
         recipient = to_addr.split(":")[0] if ":" in to_addr else to_addr
         msg["To"] = recipient
 
-        # Thread context for reply — compound (sender:slug) first so the
-        # reply carries THIS thread's subject, plain sender as legacy fallback
-        ctx = self._thread_context.get(to_addr) or self._thread_context.get(recipient, {})
+        # Thread context for reply — resolve the compound (sender:thread_id)
+        # key via metadata thread_id FIRST so a reply to THIS thread carries
+        # THIS thread's subject even when several of the sender's threads were
+        # dispatched in the same poll cycle (the plain-sender key holds the
+        # last dispatch's subject). Falls back to the compound chat_id as-is
+        # (cron/standalone sends), then the plain sender (legacy sessions).
+        ctx = {}
+        if thread_id:
+            ctx = self._thread_context.get(f"{recipient}:{thread_id}", {}) or {}
+        if not ctx:
+            ctx = self._thread_context.get(to_addr) or self._thread_context.get(recipient, {})
         subject = ctx.get("subject", "Hermes Agent")
         if not subject.startswith("Re:"):
             subject = f"Re: {subject}"
@@ -1400,12 +1410,14 @@ class EmailAdapter(BasePlatformAdapter):
 
         try:
             loop = asyncio.get_running_loop()
+            thread_id = (metadata or {}).get("thread_id")
             await loop.run_in_executor(
                 None,
                 self._send_email_with_attachments,
                 chat_id,
                 body,
                 local_paths,
+                thread_id,
             )
         except Exception as e:
             logger.error("[Email] Multi-image send failed, falling back: %s", e, exc_info=True)
@@ -1416,6 +1428,7 @@ class EmailAdapter(BasePlatformAdapter):
         to_addr: str,
         body: str,
         file_paths: List[str],
+        thread_id: Optional[str] = None,
     ) -> str:
         """Send an email with multiple file attachments via SMTP."""
         msg = MIMEMultipart()
@@ -1424,7 +1437,14 @@ class EmailAdapter(BasePlatformAdapter):
         recipient = to_addr.split(":")[0] if ":" in to_addr else to_addr
         msg["To"] = recipient
 
-        ctx = self._thread_context.get(to_addr) or self._thread_context.get(recipient, {})
+        # Same compound-key-first resolution as _send_email (metadata
+        # thread_id → compound chat_id → plain sender) so attachment
+        # replies carry the right thread's subject.
+        ctx = {}
+        if thread_id:
+            ctx = self._thread_context.get(f"{recipient}:{thread_id}", {}) or {}
+        if not ctx:
+            ctx = self._thread_context.get(to_addr) or self._thread_context.get(recipient, {})
         subject = ctx.get("subject", "Hermes Agent")
         if not subject.startswith("Re:"):
             subject = f"Re: {subject}"
@@ -1479,6 +1499,7 @@ class EmailAdapter(BasePlatformAdapter):
         """Send a file as an email attachment."""
         try:
             loop = asyncio.get_running_loop()
+            thread_id = (kwargs or {}).get("metadata", {}).get("thread_id")
             message_id = await loop.run_in_executor(
                 None,
                 self._send_email_with_attachment,
@@ -1486,6 +1507,7 @@ class EmailAdapter(BasePlatformAdapter):
                 caption or "",
                 file_path,
                 file_name,
+                thread_id,
             )
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
@@ -1498,6 +1520,7 @@ class EmailAdapter(BasePlatformAdapter):
         body: str,
         file_path: str,
         file_name: Optional[str] = None,
+        thread_id: Optional[str] = None,
     ) -> str:
         """Send an email with a file attachment via SMTP."""
         msg = MIMEMultipart()
@@ -1506,7 +1529,13 @@ class EmailAdapter(BasePlatformAdapter):
         recipient = to_addr.split(":")[0] if ":" in to_addr else to_addr
         msg["To"] = recipient
 
-        ctx = self._thread_context.get(to_addr) or self._thread_context.get(recipient, {})
+        # Same compound-key-first resolution as _send_email (metadata
+        # thread_id → compound chat_id → plain sender).
+        ctx = {}
+        if thread_id:
+            ctx = self._thread_context.get(f"{recipient}:{thread_id}", {}) or {}
+        if not ctx:
+            ctx = self._thread_context.get(to_addr) or self._thread_context.get(recipient, {})
         subject = ctx.get("subject", "Hermes Agent")
         if not subject.startswith("Re:"):
             subject = f"Re: {subject}"

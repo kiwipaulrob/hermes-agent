@@ -534,6 +534,134 @@ class TestSessionLifecycle(unittest.TestCase):
         self.assertEqual(captured[0].source.thread_id, "my-thread-1")
 
 
+class TestReplySubjectIsolation(unittest.TestCase):
+    """Replies must carry THEIR thread's subject when several of the same
+    sender's threads were dispatched in one poll cycle.
+
+    Regression for the E2E failure caught 15 Aug 2026: after dispatching
+    "test session isolation A" and "test session isolation B" back-to-back,
+    the reply to A came back as "Re: test session isolation B" because the
+    send path looked up the plain-sender key, which B's dispatch had
+    overwritten. The gateway passes the thread's slug via metadata, so the
+    adapter must resolve the compound (sender:thread_id) key from metadata.
+    """
+
+    def setUp(self):
+        self._prev_allow_all = os.environ.get("EMAIL_ALLOW_ALL_USERS")
+        os.environ["EMAIL_ALLOW_ALL_USERS"] = "true"
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+
+    def tearDown(self):
+        if self._prev_allow_all is None:
+            os.environ.pop("EMAIL_ALLOW_ALL_USERS", None)
+        else:
+            os.environ["EMAIL_ALLOW_ALL_USERS"] = self._prev_allow_all
+
+    def _make_adapter(self):
+        from gateway.config import PlatformConfig
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+            "HERMES_HOME": self._tmp.name,
+        }):
+            from plugins.platforms.email.adapter import EmailAdapter
+            return EmailAdapter(PlatformConfig(enabled=True))
+
+    def _dispatch(self, adapter, subject, body, mid):
+        import asyncio
+        captured = []
+
+        async def capture_handle(event):
+            captured.append(event)
+
+        adapter.handle_message = capture_handle
+        msg_data = {
+            "uid": mid.encode(),
+            "sender_addr": "user@test.com",
+            "sender_name": "User",
+            "subject": subject,
+            "message_id": f"<{mid}@test.com>",
+            "in_reply_to": "",
+            "body": body,
+            "attachments": [],
+            "date": "",
+        }
+        asyncio.run(adapter._dispatch_message(msg_data))
+        return captured
+
+    def _sent_subject(self, mock_smtp, call_index=-1):
+        send_call = mock_smtp.return_value.send_message.call_args_list[call_index][0][0]
+        return send_call["Subject"]
+
+    def test_reply_to_thread_a_keeps_subject_a_after_same_cycle_dispatch(self):
+        """A's reply must say 'Re: test session isolation A' even though B's
+        dispatch overwrote the plain-sender key afterwards."""
+        import asyncio
+        adapter = self._make_adapter()
+        # Both threads dispatched in the same poll cycle (the E2E scenario)
+        self._dispatch(adapter, "test session isolation A", "body A", "m1")
+        self._dispatch(adapter, "test session isolation B", "body B", "m2")
+        # Plain-sender key now holds B's subject (last dispatch wins)
+        self.assertEqual(
+            adapter._thread_context["user@test.com"]["subject"],
+            "test session isolation B",
+        )
+
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value = mock_server
+            # The gateway sends chat_id=plain sender + metadata thread_id
+            asyncio.run(adapter.send(
+                chat_id="user@test.com",
+                content="Reply to A",
+                metadata={"thread_id": "test-session-isolation-a"},
+            ))
+        self.assertEqual(
+            self._sent_subject(mock_smtp), "Re: test session isolation A"
+        )
+
+    def test_reply_to_thread_b_keeps_subject_b(self):
+        """B's reply stays correct (compound lookup, not plain-sender fallback)."""
+        import asyncio
+        adapter = self._make_adapter()
+        self._dispatch(adapter, "test session isolation A", "body A", "m1")
+        self._dispatch(adapter, "test session isolation B", "body B", "m2")
+
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value = mock_server
+            asyncio.run(adapter.send(
+                chat_id="user@test.com",
+                content="Reply to B",
+                metadata={"thread_id": "test-session-isolation-b"},
+            ))
+        self.assertEqual(
+            self._sent_subject(mock_smtp), "Re: test session isolation B"
+        )
+
+    def test_reply_without_metadata_falls_back_to_plain_sender(self):
+        """Legacy sends (no metadata) keep the old plain-sender fallback —
+        no crash, subject from whatever the plain key holds."""
+        import asyncio
+        adapter = self._make_adapter()
+        self._dispatch(adapter, "test session isolation A", "body A", "m1")
+
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value = mock_server
+            asyncio.run(adapter.send(
+                chat_id="user@test.com",
+                content="Plain reply",
+            ))
+        self.assertEqual(
+            self._sent_subject(mock_smtp), "Re: test session isolation A"
+        )
+
+
 class TestSendMethods(unittest.TestCase):
     """Test email send methods."""
 
