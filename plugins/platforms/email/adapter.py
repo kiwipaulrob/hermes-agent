@@ -18,6 +18,7 @@ Environment variables:
 import asyncio
 import email as email_lib
 import imaplib
+import json
 import logging
 import os
 import re
@@ -582,8 +583,36 @@ class EmailAdapter(BasePlatformAdapter):
         self._last_fetch_failed: bool = False
         self._last_fetch_error: str = ""
 
-        # Map chat_id (sender email) -> last subject + message-id for threading
-        self._thread_context: Dict[str, Dict[str, str]] = {}
+        # Map chat_id (sender email) -> last subject + message-id for threading.
+        # Persisted to disk (state/email_thread_context_<addr>.json) so replies
+        # keep their thread's subject/Message-ID across gateway restarts.
+        self._thread_context: Dict[str, Dict[str, Any]] = {}
+
+        # Session lifecycle knobs (config.yaml platforms.email.*):
+        #   max_messages_per_session: 0 disables auto-rotation (default 1000 —
+        #     a thread is rotated to a fresh session after this many inbound
+        #     messages so history re-processing cost stays bounded).
+        try:
+            self._max_messages_per_session = int(
+                extra.get("max_messages_per_session", 1000) or 0
+            )
+        except (TypeError, ValueError):
+            self._max_messages_per_session = 1000
+
+        # Per-account persistence path (multiplexing-safe).
+        try:
+            from hermes_constants import get_hermes_home
+
+            _state_dir = Path(get_hermes_home()) / "state"
+        except Exception:
+            _state_dir = Path.home() / ".hermes" / "state"
+        _addr_slug = (
+            re.sub(r"[^a-z0-9]+", "_", self._address.lower()).strip("_") or "default"
+        )
+        self._thread_context_path: Optional[Path] = (
+            _state_dir / f"email_thread_context_{_addr_slug}.json"
+        )
+        self._thread_context = self._load_thread_context()
 
         logger.info("[Email] Adapter initialized for %s", self._address)
 
@@ -606,6 +635,47 @@ class EmailAdapter(BasePlatformAdapter):
         except (ValueError, TypeError):
             # Fallback: just clear old entries if sort fails
             self._seen_uids = set(list(self._seen_uids)[-self._seen_uids_max // 2:])
+
+    # ── Thread-context persistence ─────────────────────────────────────
+    # _thread_context is in-memory; without persistence a gateway restart
+    # loses every thread's subject/Message-ID and replies fall back to the
+    # generic "Hermes Agent" subject. Persist the map to a small per-account
+    # JSON file on every mutation and reload on adapter construction.
+    _thread_context_max_entries: int = 500
+
+    def _load_thread_context(self) -> Dict[str, Dict[str, Any]]:
+        """Load persisted thread context (subject/message_id per chat key)."""
+        if not self._thread_context_path or not self._thread_context_path.exists():
+            return {}
+        try:
+            raw = json.loads(self._thread_context_path.read_text("utf-8"))
+            if not isinstance(raw, dict):
+                return {}
+            return {
+                str(k): dict(v)
+                for k, v in raw.items()
+                if isinstance(v, dict) and isinstance(v.get("subject"), str)
+            }
+        except Exception as e:  # corrupt/partial file — start fresh
+            logger.warning("[Email] Thread-context load failed (%s); starting fresh", e)
+            return {}
+
+    def _save_thread_context(self) -> None:
+        """Persist the thread-context map atomically (tmp + rename)."""
+        if not self._thread_context_path:
+            return
+        try:
+            self._thread_context_path.parent.mkdir(parents=True, exist_ok=True)
+            data = dict(self._thread_context)
+            if len(data) > self._thread_context_max_entries:
+                # Keep the most recent entries (dict preserves insertion order
+                # — re-inserted keys move to the end, so drop the head).
+                data = dict(list(data.items())[-self._thread_context_max_entries:])
+            tmp = self._thread_context_path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(data), "utf-8")
+            tmp.replace(self._thread_context_path)
+        except Exception as e:
+            logger.warning("[Email] Thread-context persist failed: %s", e)
 
     def _connect_smtp(self) -> smtplib.SMTP:
         """Create an SMTP connection, selecting the correct protocol for the port.
@@ -1063,6 +1133,46 @@ class EmailAdapter(BasePlatformAdapter):
                 re.sub(r"[^a-z0-9]+", "-", _inner.lower()).strip("-")[:80] or None
             )
 
+        # ── Session lifecycle: /new in body + auto-rotation cap ─────────
+        # A per-thread epoch counter (persisted with the thread context)
+        # lets a "/new" email body — or the message-count cap — start a
+        # FRESH session for this thread, while replies with the same
+        # subject keep rejoining the current generation ("<slug>-<epoch>").
+        _base_key = f"{sender_addr}:{_subject_slug}" if _subject_slug else sender_addr
+        _cur_ctx = self._thread_context.get(_base_key, {}) or {}
+        try:
+            _epoch = int(_cur_ctx.get("epoch", 0) or 0)
+        except (TypeError, ValueError):
+            _epoch = 0
+        try:
+            _msg_count = int(_cur_ctx.get("msg_count", 0) or 0) + 1
+        except (TypeError, ValueError):
+            _msg_count = 1
+
+        # "/new" (optionally followed by a fresh request) rotates the thread.
+        _is_new_cmd = bool(re.match(r"^/new\b", body, re.IGNORECASE))
+        if _is_new_cmd:
+            _epoch += 1
+            body = re.sub(r"^/new\b[ \t]*", "", body, flags=re.IGNORECASE).strip()
+
+        # Message-count cap: rotate once this thread exceeds the threshold so
+        # history re-processing cost stays bounded (the $2.69/4,175-call burst
+        # came from a 20K-message session re-processing everything per reply).
+        _cap_rotation = (
+            not _is_new_cmd
+            and self._max_messages_per_session > 0
+            and _msg_count > self._max_messages_per_session
+        )
+        if _cap_rotation:
+            _epoch += 1
+            _msg_count = 1
+
+        _thread_id = (
+            f"{_subject_slug}-{_epoch}" if (_epoch and _subject_slug) else _subject_slug
+        )
+        if _epoch and not _subject_slug:
+            _thread_id = f"new-{_epoch}"
+
         # Build message text: include subject as context
         text = body
         if subject and not subject.startswith("Re:"):
@@ -1087,18 +1197,39 @@ class EmailAdapter(BasePlatformAdapter):
                 msg_type = MessageType.DOCUMENT
 
         # Store thread context for reply threading — keyed by the compound
-        # session id (sender:slug) so a reply carries THIS thread's subject,
-        # plus the plain sender for legacy sender-only sessions.
-        _ctx_key = f"{sender_addr}:{_subject_slug}" if _subject_slug else sender_addr
-        self._thread_context[_ctx_key] = {
+        # session id (sender:thread_id) so a reply carries THIS thread's
+        # subject, plus the plain sender for legacy sender-only sessions.
+        # Also keyed by the BASE key (sender:slug) so the next dispatch finds
+        # the current epoch/count and continues in the right generation.
+        # Persisted on every write so the mapping survives gateway restarts.
+        _ctx_key = f"{sender_addr}:{_thread_id}" if _thread_id else sender_addr
+        _ctx_entry = {
             "subject": subject,
             "message_id": msg_data["message_id"],
+            "epoch": _epoch,
+            "msg_count": _msg_count,
         }
-        if _subject_slug:
-            self._thread_context[sender_addr] = {
-                "subject": subject,
-                "message_id": msg_data["message_id"],
-            }
+        self._thread_context[_ctx_key] = _ctx_entry
+        self._thread_context[_base_key] = dict(_ctx_entry)
+        self._thread_context[sender_addr] = dict(_ctx_entry)
+        self._save_thread_context()
+
+        # A bare "/new" body resets the thread without running the agent —
+        # send a short confirmation and skip dispatch (saves tokens; the
+        # fresh request in the same body, if any, is dispatched below).
+        if _is_new_cmd and not body:
+            logger.info(
+                "[Email] /new from %s — session reset for %s (epoch %d)",
+                sender_addr, _base_key, _epoch,
+            )
+            await self.send(
+                chat_id=_ctx_key,
+                content=(
+                    "✅ New session started for this thread. "
+                    "Send your next email to begin."
+                ),
+            )
+            return
 
         source = self.build_source(
             chat_id=sender_addr,
@@ -1106,7 +1237,7 @@ class EmailAdapter(BasePlatformAdapter):
             chat_type="dm",
             user_id=sender_addr,
             user_name=msg_data["sender_name"] or sender_addr,
-            thread_id=_subject_slug,
+            thread_id=_thread_id,
         )
 
         event = MessageEvent(

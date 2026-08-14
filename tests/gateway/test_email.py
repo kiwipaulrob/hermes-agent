@@ -383,6 +383,157 @@ class TestThreadContext(unittest.TestCase):
             self.assertIn("Date", send_call)
 
 
+class TestThreadContextPersistence(unittest.TestCase):
+    """Thread context must survive gateway restarts (replies keep subject)."""
+
+    def _make_adapter(self, tmp_dir):
+        from gateway.config import PlatformConfig
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+            "HERMES_HOME": str(tmp_dir),
+        }):
+            from plugins.platforms.email.adapter import EmailAdapter
+            return EmailAdapter(PlatformConfig(enabled=True))
+
+    def test_save_then_reload_roundtrip(self):
+        """Saved context loads back with subject + message_id intact."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            adapter = self._make_adapter(tmp)
+            adapter._thread_context["user@test.com:my-thread"] = {
+                "subject": "Re: My Thread",
+                "message_id": "<m@test.com>",
+                "epoch": 0,
+                "msg_count": 3,
+            }
+            adapter._save_thread_context()
+            self.assertTrue(adapter._thread_context_path.exists())
+
+            # New adapter instance (simulates gateway restart) reloads it
+            adapter2 = self._make_adapter(tmp)
+            self.assertEqual(
+                adapter2._thread_context["user@test.com:my-thread"]["subject"],
+                "Re: My Thread",
+            )
+            self.assertEqual(
+                adapter2._thread_context["user@test.com:my-thread"]["message_id"],
+                "<m@test.com>",
+            )
+
+    def test_corrupt_file_starts_fresh(self):
+        """A corrupt/partial JSON file must not crash adapter construction."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            adapter = self._make_adapter(tmp)
+            adapter._thread_context_path.parent.mkdir(parents=True, exist_ok=True)
+            adapter._thread_context_path.write_text("{not json", "utf-8")
+            adapter2 = self._make_adapter(tmp)
+            self.assertEqual(adapter2._thread_context, {})
+
+
+class TestSessionLifecycle(unittest.TestCase):
+    """/new in email body + auto-rotation cap bound session growth."""
+
+    def setUp(self):
+        self._prev_allow_all = os.environ.get("EMAIL_ALLOW_ALL_USERS")
+        os.environ["EMAIL_ALLOW_ALL_USERS"] = "true"
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+
+    def tearDown(self):
+        if self._prev_allow_all is None:
+            os.environ.pop("EMAIL_ALLOW_ALL_USERS", None)
+        else:
+            os.environ["EMAIL_ALLOW_ALL_USERS"] = self._prev_allow_all
+
+    def _make_adapter(self, max_messages=0):
+        from gateway.config import PlatformConfig
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+            "HERMES_HOME": self._tmp.name,
+        }):
+            from plugins.platforms.email.adapter import EmailAdapter
+            return EmailAdapter(
+                PlatformConfig(enabled=True, extra={"max_messages_per_session": max_messages})
+            )
+
+    def _dispatch(self, adapter, subject, body, mid):
+        import asyncio
+        captured = []
+
+        async def capture_handle(event):
+            captured.append(event)
+
+        adapter.handle_message = capture_handle
+        msg_data = {
+            "uid": mid.encode(),
+            "sender_addr": "user@test.com",
+            "sender_name": "User",
+            "subject": subject,
+            "message_id": f"<{mid}@test.com>",
+            "in_reply_to": "",
+            "body": body,
+            "attachments": [],
+            "date": "",
+        }
+        asyncio.run(adapter._dispatch_message(msg_data))
+        return captured
+
+    def test_bare_new_resets_session_without_agent_dispatch(self):
+        """A body of '/new' bumps the epoch and does NOT run the agent."""
+        adapter = self._make_adapter()
+        # Seed the thread at epoch 0
+        self._dispatch(adapter, "My Thread", "hello", "m1")
+        captured = self._dispatch(adapter, "Re: My Thread", "/new", "m2")
+        # Bare /new must not dispatch to the agent (confirmation only)
+        self.assertEqual(captured, [])
+        # Next real message lands in epoch 1 → new session key
+        captured2 = self._dispatch(adapter, "Re: My Thread", "fresh start", "m3")
+        self.assertEqual(len(captured2), 1)
+        self.assertEqual(captured2[0].source.thread_id, "my-thread-1")
+
+    def test_new_with_text_dispatches_in_fresh_session(self):
+        """/new plus a request runs the agent in the rotated session."""
+        adapter = self._make_adapter()
+        self._dispatch(adapter, "My Thread", "old context", "m1")
+        captured = self._dispatch(adapter, "Re: My Thread", "/new what is the weather", "m2")
+        self.assertEqual(len(captured), 1)
+        self.assertEqual(captured[0].source.thread_id, "my-thread-1")
+        self.assertEqual(captured[0].text, "what is the weather")
+
+    def test_auto_rotation_cap_bounds_session(self):
+        """Exceeding max_messages_per_session rotates to a new session."""
+        adapter = self._make_adapter(max_messages=2)
+        self._dispatch(adapter, "My Thread", "msg 1", "m1")
+        self._dispatch(adapter, "Re: My Thread", "msg 2", "m2")
+        # Third message crosses the cap → epoch 1
+        captured = self._dispatch(adapter, "Re: My Thread", "msg 3", "m3")
+        self.assertEqual(len(captured), 1)
+        self.assertEqual(captured[0].source.thread_id, "my-thread-1")
+        # Subsequent message continues in epoch 1 (no further rotation)
+        captured2 = self._dispatch(adapter, "Re: My Thread", "msg 4", "m4")
+        self.assertEqual(captured2[0].source.thread_id, "my-thread-1")
+
+    def test_epoch_state_persists_across_restart(self):
+        """Rotation epoch survives a restart (persisted with context)."""
+        adapter = self._make_adapter(max_messages=2)
+        self._dispatch(adapter, "My Thread", "msg 1", "m1")
+        self._dispatch(adapter, "Re: My Thread", "msg 2", "m2")
+        self._dispatch(adapter, "Re: My Thread", "msg 3", "m3")  # rotates to epoch 1
+
+        # Simulate restart: fresh adapter, same HOME
+        adapter2 = self._make_adapter(max_messages=2)
+        captured = self._dispatch(adapter2, "Re: My Thread", "msg 4", "m4")
+        self.assertEqual(captured[0].source.thread_id, "my-thread-1")
+
+
 class TestSendMethods(unittest.TestCase):
     """Test email send methods."""
 
