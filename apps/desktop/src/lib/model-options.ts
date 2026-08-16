@@ -50,11 +50,7 @@ export function modelOptionsQueryKey(profile: null | string | undefined, session
   return ['model-options', profileKey, sessionId || 'global'] as const
 }
 
-function hasSelectableModels(options: ModelOptionsResponse | null | undefined): boolean {
-  return options?.providers?.some(provider => (provider.models?.length ?? 0) > 0) ?? false
-}
-
-export async function requestModelOptions({
+export function requestModelOptions({
   explicitOnly = true,
   gateway,
   refresh = false,
@@ -75,43 +71,7 @@ export async function requestModelOptions({
       params.explicit_only = true
     }
 
-    let gatewayError: unknown
-    let gatewayOptions: ModelOptionsResponse | undefined
-
-    try {
-      gatewayOptions = await gateway.request<ModelOptionsResponse>('model.options', params)
-    } catch (error) {
-      gatewayError = error
-    }
-
-    if (gatewayOptions && hasSelectableModels(gatewayOptions)) {
-      return gatewayOptions
-    }
-
-    // A connected Desktop gateway can occasionally return only the current
-    // provider/model (or an empty provider list) while its authenticated REST
-    // catalog is already populated. Recover through the same profile-scoped
-    // endpoint Settings uses, but keep the live session selection authoritative.
-    try {
-      const restOptions = await getGlobalModelOptions({ explicitOnly, ...(refresh ? { refresh: true } : {}) })
-
-      if (hasSelectableModels(restOptions)) {
-        return {
-          ...restOptions,
-          ...(gatewayOptions?.provider ? { provider: gatewayOptions.provider } : {}),
-          ...(gatewayOptions?.model ? { model: gatewayOptions.model } : {})
-        }
-      }
-    } catch {
-      // Preserve the gateway result (or its original error) when the recovery
-      // path is unavailable.
-    }
-
-    if (gatewayOptions) {
-      return gatewayOptions
-    }
-
-    throw gatewayError
+    return gateway.request<ModelOptionsResponse>('model.options', params)
   }
 
   return getGlobalModelOptions({ explicitOnly, ...(refresh ? { refresh: true } : {}) })

@@ -1019,7 +1019,7 @@ def build_converse_kwargs(
     model: str,
     messages: List[Dict],
     tools: Optional[List[Dict]] = None,
-    max_tokens: Optional[int] = 4096,
+    max_tokens: int = 4096,
     temperature: Optional[float] = None,
     top_p: Optional[float] = None,
     stop_sequences: Optional[List[str]] = None,
@@ -1028,24 +1028,16 @@ def build_converse_kwargs(
     """Build kwargs for ``bedrock-runtime.converse()`` or ``converse_stream()``.
 
     Converts OpenAI-format inputs to Converse API parameters.
-
-    ``max_tokens=None`` omits ``inferenceConfig.maxTokens`` entirely, in which
-    case Bedrock defaults to the model's maximum allowed output — the Converse
-    field is optional per the AWS API reference. The default stays 4096 so
-    existing callers are unaffected; callers that want the model's full output
-    budget (e.g. uncapped auxiliary vision calls) pass ``None`` explicitly.
     """
     system_prompt, converse_messages = convert_messages_to_converse(messages)
     cache_enabled = _model_supports_prompt_cache(model)
 
-    inference_config: Dict[str, Any] = {}
-    if max_tokens is not None:
-        inference_config["maxTokens"] = max_tokens
-
     kwargs: Dict[str, Any] = {
         "modelId": model,
         "messages": converse_messages,
-        "inferenceConfig": inference_config,
+        "inferenceConfig": {
+            "maxTokens": max_tokens,
+        },
     }
 
     if system_prompt:
@@ -1094,10 +1086,6 @@ def build_converse_kwargs(
     if guardrail_config:
         kwargs["guardrailConfig"] = guardrail_config
 
-    if not kwargs["inferenceConfig"]:
-        # inferenceConfig is optional on the wire; don't send an empty object.
-        del kwargs["inferenceConfig"]
-
     return kwargs
 
 
@@ -1106,7 +1094,7 @@ def call_converse(
     model: str,
     messages: List[Dict],
     tools: Optional[List[Dict]] = None,
-    max_tokens: Optional[int] = 4096,
+    max_tokens: int = 4096,
     temperature: Optional[float] = None,
     top_p: Optional[float] = None,
     stop_sequences: Optional[List[str]] = None,
@@ -1147,7 +1135,7 @@ def call_converse_stream(
     model: str,
     messages: List[Dict],
     tools: Optional[List[Dict]] = None,
-    max_tokens: Optional[int] = 4096,
+    max_tokens: int = 4096,
     temperature: Optional[float] = None,
     top_p: Optional[float] = None,
     stop_sequences: Optional[List[str]] = None,

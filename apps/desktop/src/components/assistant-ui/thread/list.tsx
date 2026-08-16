@@ -577,11 +577,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // can be overwritten by another mounted pane; leave a scrolled-up reader
   // exactly where they were.
   useEffect(
-    () =>
-      subscribeToThreadForeground(
-        () => isAtBottom,
-        () => void scrollToBottom()
-      ),
+    () => subscribeToThreadForeground(() => isAtBottom, () => void scrollToBottom()),
     [isAtBottom, scrollToBottom]
   )
 

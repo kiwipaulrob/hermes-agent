@@ -17,8 +17,7 @@ import {
   reconcileActiveTranscript,
   rehydrateLiveSessionStatuses,
   resolveActiveTranscriptSession,
-  useBackgroundSync,
-  windowIsActivelyViewed
+  useBackgroundSync
 } from './use-background-sync'
 
 vi.mock('@/hermes', async importOriginal => ({
@@ -113,12 +112,6 @@ function renderSync(
   )
 }
 
-beforeEach(() => {
-  // visiblePoll only ticks while the window is actively viewed; jsdom's
-  // document.hasFocus() is not reliably true, so pin it for these tests.
-  vi.spyOn(document, 'hasFocus').mockReturnValue(true)
-})
-
 afterEach(() => {
   cleanup()
   vi.clearAllTimers()
@@ -130,7 +123,6 @@ afterEach(() => {
   setMessagingSessions([])
   setBusy(false)
   vi.clearAllMocks()
-  vi.restoreAllMocks()
   clearAllSessionStates()
 })
 
@@ -310,14 +302,6 @@ describe('reconcileActiveTranscript', () => {
     await request
 
     expect(fixture.updateSessionState).not.toHaveBeenCalled()
-  })
-})
-
-describe('windowIsActivelyViewed', () => {
-  it('requires both DOM visibility and keyboard focus', () => {
-    expect(windowIsActivelyViewed({ focused: true, visibilityState: 'visible' })).toBe(true)
-    expect(windowIsActivelyViewed({ focused: false, visibilityState: 'visible' })).toBe(false)
-    expect(windowIsActivelyViewed({ focused: true, visibilityState: 'hidden' })).toBe(false)
   })
 })
 

@@ -1,7 +1,6 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
 import { StableText } from '@/components/chat/stable-text'
-import { useViewedInterval } from '@/hooks/use-viewed-interval'
 import { compactNumber } from '@/lib/format'
 import type { UsageStats } from '@/types/hermes'
 
@@ -62,7 +61,17 @@ export function contextBarLabel(usage: UsageStats): string {
 export function LiveDuration({ since }: { since: number | null | undefined }) {
   const [now, setNow] = useState(() => Date.now())
 
-  useViewedInterval(() => setNow(Date.now()), 1000, Boolean(since))
+  useEffect(() => {
+    if (!since) {
+      return
+    }
+
+    const tick = () => setNow(Date.now())
+    tick()
+    const timer = window.setInterval(tick, 1000)
+
+    return () => window.clearInterval(timer)
+  }, [since])
 
   if (!since) {
     return null

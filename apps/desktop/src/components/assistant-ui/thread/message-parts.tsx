@@ -1,18 +1,15 @@
 import {
   type ReasoningMessagePartComponent,
-  type TextMessagePartProps,
   type ToolCallMessagePartProps,
   useAuiState,
   useMessagePartReasoning
 } from '@assistant-ui/react'
-import { useStore } from '@nanostores/react'
 import { type ComponentProps, type FC, type ReactNode, useEffect, useRef, useState } from 'react'
 
 import { ClarifyTool } from '@/components/assistant-ui/clarify-tool'
 import { MarkdownText, MarkdownTextContent } from '@/components/assistant-ui/markdown-text'
 import { McpSetupTool } from '@/components/assistant-ui/mcp-setup-tool'
 import { AgentDeliveryNotice, deliveryTargetFromCommand } from '@/components/assistant-ui/thread/agent-delivery'
-import { TimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
 import { DelegateTool } from '@/components/assistant-ui/tool/delegate'
 import { ToolFallback, ToolGroupSlot } from '@/components/assistant-ui/tool/fallback'
 import { formatElapsed, useElapsedSeconds, useMeasuredDuration } from '@/components/chat/activity-timer'
@@ -24,12 +21,9 @@ import { generatedImageFromResult } from '@/lib/generated-images'
 import { separateGluedReasoningBlocks } from '@/lib/reasoning-blocks'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
-import { $reasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
 
-type TimelineToolCallProps = ToolCallMessagePartProps & { completedAt?: number; timestamp?: number }
-
-const ImageGenerateTool: FC<TimelineToolCallProps> = props => {
-  const { args, completedAt, result, timestamp } = props
+const ImageGenerateTool: FC<ToolCallMessagePartProps> = props => {
+  const { args, result } = props
   const aspectRatio = typeof args?.aspect_ratio === 'string' ? args.aspect_ratio : undefined
 
   // The image card owns successful generations. Failed or malformed results
@@ -41,28 +35,22 @@ const ImageGenerateTool: FC<TimelineToolCallProps> = props => {
 
   return (
     <div className="mt-1.5">
-      <TimelineTimestamp className="mb-0.5 block" completedAt={completedAt} timestamp={timestamp} />
       <GeneratedImage aspectRatio={aspectRatio} result={result} />
     </div>
   )
 }
 
-const DelegateToolPart: FC<TimelineToolCallProps> = props => {
+const DelegateToolPart: FC<ToolCallMessagePartProps> = props => {
   // A call that failed outright dispatched nothing — there are no children to
   // list, only an error. The generic row extracts and expands it properly.
   if (props.isError) {
     return <ToolFallback {...props} />
   }
 
-  return (
-    <>
-      <TimelineTimestamp className="mb-0.5 block" completedAt={props.completedAt} timestamp={props.timestamp} />
-      <DelegateTool args={props.args} result={props.result} toolCallId={props.toolCallId} />
-    </>
-  )
+  return <DelegateTool args={props.args} result={props.result} toolCallId={props.toolCallId} />
 }
 
-const ChainToolFallback: FC<TimelineToolCallProps> = props => {
+const ChainToolFallback: FC<ToolCallMessagePartProps> = props => {
   // todo parts are hoisted to a dedicated panel above the message content.
   if (props.toolName === 'todo') {
     return null
@@ -96,12 +84,7 @@ const ChainToolFallback: FC<TimelineToolCallProps> = props => {
   }
 
   if (props.toolName === 'clarify') {
-    return (
-      <>
-        <TimelineTimestamp className="mb-0.5 block" completedAt={props.completedAt} timestamp={props.timestamp} />
-        <ClarifyTool {...props} />
-      </>
-    )
+    return <ClarifyTool {...props} />
   }
 
   if (props.toolName === 'setup_mcp') {
@@ -111,29 +94,19 @@ const ChainToolFallback: FC<TimelineToolCallProps> = props => {
   return <ToolFallback {...props} />
 }
 
-type TimelineTextPartProps = TextMessagePartProps & { completedAt?: number; timestamp?: number }
-
-const TimelineMarkdownText: FC<TimelineTextPartProps> = ({ completedAt, timestamp }) => (
-  <>
-    <TimelineTimestamp className="mb-0.5 block" completedAt={completedAt} timestamp={timestamp} />
-    <MarkdownText />
-  </>
-)
-
 const ThinkingDisclosure: FC<{
   children: ReactNode
-  completedAt?: number
   messageRunning?: boolean
   pending?: boolean
-  timestamp?: number
   // Required: the block's duration is remembered against this key, so a
   // component that mounts after the block finished can still report it.
   timerKey: string
-}> = ({ children, completedAt, messageRunning = false, pending = false, timestamp, timerKey }) => {
+}> = ({ children, messageRunning = false, pending = false, timerKey }) => {
   const { t } = useI18n()
-  const reasoningCollapsedByDefault = useStore($reasoningCollapsedByDefault)
-  // `null` = no explicit user toggle yet. Live reasoning remains visible by
-  // default, unless the user opts into the low-jitter collapsed presentation.
+  // `null` = no explicit user toggle yet, defer to the streaming default.
+  // The default is "auto-open while streaming, auto-collapse when done" so
+  // reasoning surfaces a live preview without manual interaction. The first
+  // explicit toggle wins from then on.
   const [userOpen, setUserOpen] = useState<boolean | null>(null)
   const elapsed = useElapsedSeconds(pending, timerKey)
   const thoughtFor = useMeasuredDuration(pending, timerKey)
@@ -141,8 +114,8 @@ const ThinkingDisclosure: FC<{
   const contentRef = useRef<HTMLDivElement | null>(null)
   const enterRef = useEnterAnimation(messageRunning, timerKey)
 
-  const open = userOpen ?? (pending && !reasoningCollapsedByDefault)
-  const isPreview = pending && userOpen === null && !reasoningCollapsedByDefault
+  const open = userOpen ?? pending
+  const isPreview = pending && userOpen === null
 
   // Three ways a finished block can report itself. With a measured duration it
   // says so, unless the timer's whole seconds round it to "0s" — accurate and
@@ -208,17 +181,9 @@ const ThinkingDisclosure: FC<{
       data-slot="aui_thinking-disclosure"
       ref={enterRef}
     >
-      <ScaffoldRow
-        onToggle={() => setUserOpen(!open)}
-        open={open}
-        trailing={
-          <span className="flex shrink-0 items-center gap-1.5">
-            <TimelineTimestamp className={SCAFFOLD_META_CLASS} completedAt={completedAt} timestamp={timestamp} />
-            {pending && <ActivityTimerText className={SCAFFOLD_META_CLASS} seconds={elapsed} />}
-          </span>
-        }
-      >
+      <ScaffoldRow onToggle={() => setUserOpen(!open)} open={open}>
         <span className={cn(SCAFFOLD_LABEL_CLASS, pending && 'shimmer')}>{thoughtLabel}</span>
+        {pending && <ActivityTimerText className={SCAFFOLD_META_CLASS} seconds={elapsed} />}
       </ScaffoldRow>
       {open && (
         <div
@@ -271,22 +236,6 @@ const ReasoningAccordionGroup: FC<{ children?: ReactNode; endIndex: number; star
       .some(p => p?.type === 'reasoning' && typeof p.text === 'string' && p.text.trim().length > 0)
   )
 
-  const timestamp = useAuiState(s =>
-    s.message.parts.slice(Math.max(0, startIndex), endIndex + 1).reduce<number | undefined>((earliest, part) => {
-      const value = part.type === 'reasoning' ? (part as { timestamp?: number }).timestamp : undefined
-
-      return value === undefined ? earliest : earliest === undefined ? value : Math.min(earliest, value)
-    }, undefined)
-  )
-
-  const completedAt = useAuiState(s =>
-    s.message.parts.slice(Math.max(0, startIndex), endIndex + 1).reduce<number | undefined>((latest, part) => {
-      const value = part.type === 'reasoning' ? (part as { completedAt?: number }).completedAt : undefined
-
-      return value === undefined ? latest : latest === undefined ? value : Math.max(latest, value)
-    }, undefined)
-  )
-
   if (!hasContent) {
     return null
   }
@@ -297,11 +246,9 @@ const ReasoningAccordionGroup: FC<{ children?: ReactNode; endIndex: number; star
     // to measure the second and third blocks from the first one's start and
     // report the running total as each block's duration.
     <ThinkingDisclosure
-      completedAt={completedAt}
       messageRunning={messageRunning}
       pending={pending}
       timerKey={`reasoning:${messageId}:${startIndex}`}
-      timestamp={timestamp}
     >
       {children}
     </ThinkingDisclosure>
@@ -336,7 +283,7 @@ const ReasoningTextPart: ReasoningMessagePartComponent = () => {
 export const MESSAGE_PARTS_COMPONENTS = {
   Reasoning: ReasoningTextPart,
   ReasoningGroup: ReasoningAccordionGroup,
-  Text: TimelineMarkdownText,
+  Text: MarkdownText,
   ToolGroup: ToolGroupSlot,
   tools: { Fallback: ChainToolFallback }
 } as const

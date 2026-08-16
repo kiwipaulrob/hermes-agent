@@ -346,11 +346,7 @@ function CronJobSidebarRow({
                   onClick={onTrigger}
                   type="button"
                 >
-                  {busy ? (
-                    <GlyphSpinner ariaLabel={c.triggerNow} className="text-[0.75rem]" />
-                  ) : (
-                    <Codicon name="zap" size="0.75rem" />
-                  )}
+                  {busy ? <GlyphSpinner ariaLabel={c.triggerNow} className="text-[0.75rem]" /> : <Codicon name="zap" size="0.75rem" />}
                 </button>
               </Tip>
               <Tip label={c.manage}>

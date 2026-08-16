@@ -43,7 +43,7 @@ from urllib.parse import unquote, urlparse
 from contextlib import contextmanager
 from pathlib import Path
 from datetime import datetime
-from typing import List, Dict, Any, Optional, Mapping
+from typing import List, Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -81,15 +81,13 @@ try:
         install_cmd_backspace_alias,
         install_ctrl_enter_alias,
         install_ignored_terminal_sequences,
-        install_modify_other_keys_aliases,
         install_shift_enter_alias,
     )
     install_shift_enter_alias()
     install_ctrl_enter_alias()
     install_cmd_backspace_alias()
-    install_modify_other_keys_aliases()
     install_ignored_terminal_sequences()
-    del install_shift_enter_alias, install_ctrl_enter_alias, install_cmd_backspace_alias, install_modify_other_keys_aliases, install_ignored_terminal_sequences
+    del install_shift_enter_alias, install_ctrl_enter_alias, install_cmd_backspace_alias, install_ignored_terminal_sequences
 except Exception:
     pass
 import threading
@@ -984,11 +982,10 @@ def _cleanup_all_browsers(*args, **kwargs):
 
 # Guard to prevent cleanup from running multiple times on exit
 _cleanup_done = False
-_cleanup_in_progress = False
 _cli_wake_owner = None
 # One-shot CLI finalization runs before process cleanup so plugins can observe
 # the session boundary while the agent is still attached. If a signal lands in
-# that narrow window, atexit cleanup must not emit that session finalization again.
+# that narrow window, atexit cleanup must not emit that session finalize again.
 _single_query_finalize_attempted_session_ids: set[str | None] = set()
 # Weak reference to the active AIAgent for memory provider shutdown at exit
 _active_agent_ref = None
@@ -1059,7 +1056,7 @@ def _prepare_deferred_agent_startup() -> None:
             exc_info=True,
         )
 
-def _arm_exit_watchdog(timeout_s: float | None = None, *, from_signal: bool = False) -> None:
+def _arm_exit_watchdog(timeout_s: float | None = None) -> None:
     """Guarantee the process actually exits once shutdown has begun.
 
     Two hang classes have kept "dead" CLI processes alive for minutes:
@@ -1095,13 +1092,6 @@ def _arm_exit_watchdog(timeout_s: float | None = None, *, from_signal: bool = Fa
 
     def _watchdog():
         time.sleep(timeout_s)
-        # If this is the outer, signal-armed watchdog and cleanup is already in
-        # progress, let the cleanup-owned timer enforce shutdown for the current
-        # cycle. The signal timer is a broader backstop when graceful unwind
-        # never starts.
-        if from_signal and _cleanup_in_progress:
-            return
-
         # Still alive — cleanup or interpreter teardown is wedged.
         try:
             logger.warning(
@@ -1170,112 +1160,108 @@ def _arm_exit_watchdog_on_shutdown_signal() -> None:
     if base <= 0:
         return  # explicitly disabled
     try:
-        _arm_exit_watchdog(timeout_s=base * 2, from_signal=True)
+        _arm_exit_watchdog(timeout_s=base * 2)
     except Exception:
         pass  # never let the backstop break signal handling
 
 
 def _run_cleanup(*, notify_session_finalize: bool = True):
     """Run resource cleanup exactly once."""
-    global _cleanup_done, _cleanup_in_progress
+    global _cleanup_done
     if _cleanup_done:
         return
     _cleanup_done = True
-    _cleanup_in_progress = True
+
+    # Bound total shutdown time: if cleanup (or the interpreter's
+    # thread-join teardown after it) wedges, force-exit instead of
+    # leaving a zombie CLI holding the terminal for minutes.
+    _arm_exit_watchdog()
+
+    # Reset terminal input modes first, before the slower resource teardown
+    # below (MCP / browser / memory shutdown can take seconds). On Ctrl+C the
+    # user's terminal becomes usable immediately, and a later step raising
+    # can't skip the reset (#36823). No-op unless the TUI actually ran.
+    _reset_terminal_input_modes_on_exit()
 
     try:
-        # Bound total shutdown time: if cleanup (or the interpreter's
-        # thread-join teardown after it) wedges, force-exit instead of
-        # leaving a zombie CLI holding the terminal for minutes.
-        _arm_exit_watchdog()
-
-        # Reset terminal input modes first, before the slower resource teardown
-        # below (MCP / browser / memory shutdown can take seconds). On Ctrl+C the
-        # user's terminal becomes usable immediately, and a later step raising
-        # can't skip the reset (#36823). No-op unless the TUI actually ran.
-        _reset_terminal_input_modes_on_exit()
-
-        try:
-            from tools.wake_word import stop_listening as _stop_wake_word
-            if _cli_wake_owner is not None:
-                _stop_wake_word(owner=_cli_wake_owner)
-        except Exception:
-            pass
-        try:
-            _cleanup_all_terminals()
-        except Exception:
-            pass
-        try:
-            from tools.async_delegation import interrupt_all as _interrupt_async_delegations
-            _interrupt_async_delegations(reason="CLI shutdown")
-        except Exception:
-            pass
-        try:
-            _cleanup_all_browsers()
-        except Exception:
-            pass
-        try:
-            from tools.mcp_tool import shutdown_mcp_servers
-            shutdown_mcp_servers()
-        except BaseException:
-            pass
-        # Close cached auxiliary LLM clients (sync + async) so that
-        # AsyncHttpxClientWrapper.__del__ doesn't fire on a closed event loop
-        # and trigger prompt_toolkit's "Press ENTER to continue..." handler.
-        try:
-            from agent.auxiliary_client import shutdown_cached_clients
-            shutdown_cached_clients()
-        except Exception:
-            pass
-        # Shut down memory provider (on_session_end + shutdown_all) at actual
-        # session boundary — NOT per-turn inside run_conversation().
-        if notify_session_finalize:
-            cleanup_session_id = _active_agent_ref.session_id if _active_agent_ref else None
-            if _should_emit_cleanup_session_finalize(cleanup_session_id):
-                _notify_session_finalize(
-                    session_id=cleanup_session_id,
-                    platform="cli",
-                    reason="shutdown",
+        from tools.wake_word import stop_listening as _stop_wake_word
+        if _cli_wake_owner is not None:
+            _stop_wake_word(owner=_cli_wake_owner)
+    except Exception:
+        pass
+    try:
+        _cleanup_all_terminals()
+    except Exception:
+        pass
+    try:
+        from tools.async_delegation import interrupt_all as _interrupt_async_delegations
+        _interrupt_async_delegations(reason="CLI shutdown")
+    except Exception:
+        pass
+    try:
+        _cleanup_all_browsers()
+    except Exception:
+        pass
+    try:
+        from tools.mcp_tool import shutdown_mcp_servers
+        shutdown_mcp_servers()
+    except BaseException:
+        pass
+    # Close cached auxiliary LLM clients (sync + async) so that
+    # AsyncHttpxClientWrapper.__del__ doesn't fire on a closed event loop
+    # and trigger prompt_toolkit's "Press ENTER to continue..." handler.
+    try:
+        from agent.auxiliary_client import shutdown_cached_clients
+        shutdown_cached_clients()
+    except Exception:
+        pass
+    # Shut down memory provider (on_session_end + shutdown_all) at actual
+    # session boundary — NOT per-turn inside run_conversation().
+    if notify_session_finalize:
+        cleanup_session_id = _active_agent_ref.session_id if _active_agent_ref else None
+        if _should_emit_cleanup_session_finalize(cleanup_session_id):
+            _notify_session_finalize(
+                session_id=cleanup_session_id,
+                platform="cli",
+                reason="shutdown",
+            )
+    try:
+        if _active_agent_ref and hasattr(_active_agent_ref, 'shutdown_memory_provider'):
+            # A /new shortly before exit leaves its end→switch boundary task
+            # (old-session extraction, LLM-bound) queued on the memory
+            # manager's serialized worker. shutdown_all()'s drain only waits
+            # ~5s and cancels queued tasks, so give pending work a bounded
+            # head start via the manager's own barrier — otherwise a
+            # "/new then quit" silently drops the old session's extraction.
+            # The 30s exit watchdog remains the hard backstop.
+            _mm = getattr(_active_agent_ref, '_memory_manager', None)
+            if _mm is not None and hasattr(_mm, 'flush_pending'):
+                try:
+                    _mm.flush_pending(timeout=10)
+                except Exception:
+                    pass
+            # Forward the agent's own transcript so memory providers'
+            # ``on_session_end`` hooks see the real conversation instead of
+            # an empty list (#15165). ``_session_messages`` is set on
+            # ``AIAgent.__init__`` and refreshed every turn via
+            # ``_persist_session``. Fall back to no-arg on test stubs /
+            # partially-initialised agents where the attribute is missing.
+            _session_msgs = getattr(_active_agent_ref, '_session_messages', None)
+            if isinstance(_session_msgs, list):
+                logger.info(
+                    "CLI cleanup calling memory shutdown for session %s with %d message(s)",
+                    getattr(_active_agent_ref, "session_id", None) or "<unknown>",
+                    len(_session_msgs),
                 )
-        try:
-            if _active_agent_ref and hasattr(_active_agent_ref, 'shutdown_memory_provider'):
-                # A /new shortly before exit leaves its end→switch boundary task
-                # (old-session extraction, LLM-bound) queued on the memory
-                # manager's serialized worker. shutdown_all()'s drain only waits
-                # ~5s and cancels queued tasks, so give pending work a bounded
-                # head start via the manager's own barrier — otherwise a
-                # "/new then quit" silently drops the old session's extraction.
-                # The 30s exit watchdog remains the hard backstop.
-                _mm = getattr(_active_agent_ref, '_memory_manager', None)
-                if _mm is not None and hasattr(_mm, 'flush_pending'):
-                    try:
-                        _mm.flush_pending(timeout=10)
-                    except Exception:
-                        pass
-                # Forward the agent's own transcript so memory providers'
-                # on_session_end hooks see the real conversation instead of
-                # an empty list (#15165). ``_session_messages`` is set on
-                # ``AIAgent.__init__`` and refreshed every turn via
-                # ``_persist_session``. Fall back to no-arg on test stubs /
-                # partially-initialised agents where the attribute is missing.
-                _session_msgs = getattr(_active_agent_ref, '_session_messages', None)
-                if isinstance(_session_msgs, list):
-                    logger.info(
-                        "CLI cleanup calling memory shutdown for session %s with %d message(s)",
-                        getattr(_active_agent_ref, "session_id", None) or "<unknown>",
-                        len(_session_msgs),
-                    )
-                    _active_agent_ref.shutdown_memory_provider(_session_msgs)
-                else:
-                    logger.info(
-                        "CLI cleanup calling memory shutdown for session %s without session message list",
-                        getattr(_active_agent_ref, "session_id", None) or "<unknown>",
-                    )
-                    _active_agent_ref.shutdown_memory_provider()
-        except Exception as e:
-            logger.warning("CLI cleanup memory shutdown failed: %s", e, exc_info=True)
-    finally:
-        _cleanup_in_progress = False
+                _active_agent_ref.shutdown_memory_provider(_session_msgs)
+            else:
+                logger.info(
+                    "CLI cleanup calling memory shutdown for session %s without session message list",
+                    getattr(_active_agent_ref, "session_id", None) or "<unknown>",
+                )
+                _active_agent_ref.shutdown_memory_provider()
+    except Exception as e:
+        logger.warning("CLI cleanup memory shutdown failed: %s", e, exc_info=True)
 
 
 def _should_emit_cleanup_session_finalize(session_id: str | None) -> bool:
@@ -1812,14 +1798,6 @@ def _worktree_has_unpushed_commits(worktree_path: str, timeout: int = 10) -> boo
     ``refs/remotes/*``. If a repo has no remote-tracking refs yet, there is no
     usable remote baseline to compare against, so treat it as having no
     "unpushed" commits.
-
-    SHALLOW-CLONE CAVEAT: in a shallow clone (the installer default) the
-    shallow boundary can disconnect an older worktree HEAD from origin/*,
-    making already-public commits look unpushed. The verdict here stays
-    conservative (True) on purpose — deleting on unverifiable history would
-    risk real work. Callers that can afford it should deepen first via
-    ``_deepen_shallow_repo`` (the startup pruner does) or check
-    ``_repo_is_shallow`` before presenting this verdict as fact.
     """
     import subprocess
 
@@ -1863,88 +1841,6 @@ def _worktree_is_dirty(worktree_path: str, timeout: int = 10) -> bool:
         return bool(result.stdout.strip())
     except Exception:
         return True
-
-
-def _repo_is_shallow(repo_path: str, timeout: int = 5) -> bool:
-    """Return whether *repo_path* belongs to a shallow clone.
-
-    Shallowness poisons every history-connectivity verdict the worktree
-    machinery relies on: an older worktree's HEAD (a past snapshot of main)
-    is disconnected from current ``origin/main`` by the shallow boundary, so
-    ``git log HEAD --not --remotes`` misreports thousands of already-public
-    commits as "unpushed" and the worktree is preserved forever. The default
-    installer clones with ``--depth 1``, so this is the normal state of a
-    user install, not an edge case.
-
-    Fails toward False: if git can't be queried we don't want callers to
-    take shallow-specific branches on top of an unknown state.
-    """
-    import subprocess
-
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--is-shallow-repository"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, cwd=repo_path,
-        )
-        return result.returncode == 0 and result.stdout.strip() == "true"
-    except Exception:
-        return False
-
-
-def _deepen_shallow_repo(repo_root: str, timeout: int = 600) -> bool:
-    """One-time blobless unshallow so history-based verdicts become correct.
-
-    Fetches the full commit/tree graph (``--unshallow --filter=blob:none``)
-    without downloading historical file contents, which keeps the transfer a
-    small fraction of a full clone. Runs only from background paths (the
-    startup pruner thread), never on the interactive session-close path.
-
-    Falls back to a plain ``--unshallow`` if the server rejects partial-clone
-    filters. Fail-soft: returns whether the repo is actually non-shallow
-    afterwards; on failure (offline, no remote) callers keep today's
-    preserve-everything behavior.
-    """
-    import subprocess
-
-    if not _repo_is_shallow(repo_root):
-        return True
-
-    try:
-        remotes = subprocess.run(
-            ["git", "remote"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10, cwd=repo_root,
-        )
-        names = [r.strip() for r in remotes.stdout.splitlines() if r.strip()]
-        if remotes.returncode != 0 or not names:
-            return False
-        remote = "origin" if "origin" in names else names[0]
-
-        for extra in (["--filter=blob:none"], []):
-            try:
-                result = subprocess.run(
-                    ["git", "fetch", remote, "--unshallow", *extra],
-                    capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, cwd=repo_root,
-                )
-            except subprocess.TimeoutExpired:
-                return False
-            if result.returncode == 0:
-                break
-            logger.debug(
-                "git fetch --unshallow%s failed: %s",
-                " " + " ".join(extra) if extra else "",
-                result.stderr.strip()[-500:],
-            )
-    except Exception as e:
-        logger.debug("Deepening shallow repo failed (non-fatal): %s", e)
-        return False
-
-    deepened = not _repo_is_shallow(repo_root)
-    if deepened:
-        logger.info(
-            "Deepened shallow clone at %s so worktree cleanup can verify "
-            "push state", repo_root,
-        )
-    return deepened
 
 
 # Upper bound on retained `git cherry` verdict entries (see
@@ -2184,17 +2080,8 @@ def _cleanup_worktree(info: Dict[str, str] = None) -> None:
     has_unpushed = _worktree_has_unpushed_commits(wt_path, timeout=10)
 
     if has_unpushed:
-        if _repo_is_shallow(repo_root):
-            # In a shallow clone the unpushed verdict is unreliable: the
-            # shallow boundary disconnects this worktree's history from
-            # origin/*, so already-public commits look "unpushed". Be honest
-            # about why we're keeping it — the startup pruner deepens the
-            # clone in the background and will reap it on a later startup.
-            print(f"\n\033[33m⚠ Shallow clone — cannot verify push state, keeping: {wt_path}\033[0m")
-            print("  The next `hermes -w` session deepens the clone and prunes merged worktrees automatically.")
-        else:
-            print(f"\n\033[33m⚠ Worktree has unpushed commits, keeping: {wt_path}\033[0m")
-            print(f"  To clean up manually: git worktree remove --force {wt_path}")
+        print(f"\n\033[33m⚠ Worktree has unpushed commits, keeping: {wt_path}\033[0m")
+        print(f"  To clean up manually: git worktree remove --force {wt_path}")
         _active_worktree = None
         return
 
@@ -2386,15 +2273,6 @@ def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
     if not worktrees_dir.exists():
         _prune_orphaned_branches(repo_root)
         return
-
-    # A shallow clone (the installer's default `--depth 1`) disconnects old
-    # worktree HEADs from current origin/main, so the unpushed-commits guard
-    # misclassifies every aged worktree as unpushed work and preserves it
-    # forever. Deepen once — bloblessly, in this background thread — so all
-    # history verdicts below (and the session-exit cleanup) become correct.
-    # Fail-soft: offline, we just keep today's preserve-everything behavior.
-    if _repo_is_shallow(repo_root):
-        _deepen_shallow_repo(repo_root)
 
     now = time.time()
     stale_work_cutoff = now - (7 * 24 * 3600)
@@ -3899,114 +3777,6 @@ _TERMINAL_INPUT_MODE_RESET_SEQ = (
     "\x1b[0m"      # reset text attributes
     "\x1b[?25h"    # ensure cursor visible
 )
-_EXTENDED_ENTER_KEYS_SEQ = "\x1b[>1u\x1b[>4;2m"
-
-
-_BACKSLASH_LINE_CONTINUATION_RE = re.compile(r"\\[ \t]*$")
-
-
-def _terminal_supports_extended_enter_keys(env: Optional[Mapping[str, str]] = None) -> bool:
-    """Whether it is safe/useful to request modified Enter key reporting.
-
-    The classic CLI already maps Kitty CSI-u / xterm modifyOtherKeys Shift+Enter
-    byte sequences to the newline handler. Some terminals (notably iTerm2) only
-    emit those distinct sequences after the application asks for extended key
-    mode. Keep this allowlist aligned with the Ink TUI, which enables the same
-    modes for these terminals.
-    """
-    if env is None:
-        env = os.environ
-    term_program = (env.get("TERM_PROGRAM") or "").strip()
-    term = (env.get("TERM") or "").strip().lower()
-    if env.get("WT_SESSION"):
-        return True
-    if term_program in {"iTerm.app", "WezTerm", "ghostty", "vscode"}:
-        return True
-    if env.get("KITTY_WINDOW_ID") or "kitty" in term:
-        return True
-    if term == "xterm-ghostty":
-        return True
-    if term.startswith("tmux") or term_program.lower() == "tmux":
-        return True
-    return False
-
-
-def _enable_extended_enter_keys(output=None, env: Optional[Mapping[str, str]] = None) -> bool:
-    """Ask allowlisted terminals to report modified keys distinctly.
-
-    Writes the Kitty keyboard protocol push (CSI >1u, disambiguate mode) AND
-    xterm modifyOtherKeys level 2 (CSI >4;2m), mirroring the Ink TUI —
-    terminals honor whichever protocol they implement.  Both are needed:
-    kitty-the-terminal removed modifyOtherKeys support entirely (it only
-    speaks its own protocol), while tmux/VS Code only accept modifyOtherKeys.
-
-    Under either protocol the terminal re-encodes modified keys as escape
-    sequences — Kitty disambiguate mode as ``ESC[<codepoint>;<mod>u`` (plus
-    the Esc key as ``ESC[27u``), modifyOtherKeys=2 as
-    ``ESC[27;<mod>;<codepoint>~``.  Stock prompt_toolkit 3.x maps almost
-    none of these, which is why the CSI >1u push was temporarily removed in
-    #87074 (Ctrl+C arrived as ``ESC[99;5u`` and died, #56684).
-    ``install_modify_other_keys_aliases()`` (called at CLI startup from
-    ``hermes_cli.pt_input_extras``) now populates ``ANSI_SEQUENCES`` with the
-    full Ctrl/Alt/Shift/multi-modifier and functional-key tables under BOTH
-    formats, so every existing key binding continues to fire — including
-    Ctrl+C, which is handled by prompt_toolkit's ``c-c`` binding (raw mode
-    clears ISIG, so the kernel INTR path was never in play for the CLI).
-
-    The exit reset sequence pops/resets both modes, so this is safe across
-    normal exits, Ctrl+C, and SIGTERM cleanup.
-    """
-    if not _terminal_supports_extended_enter_keys(env):
-        return False
-    try:
-        target = output
-        if target is not None and hasattr(target, "write_raw"):
-            target.write_raw(_EXTENDED_ENTER_KEYS_SEQ)
-            target.flush()
-            return True
-        stream = sys.stdout
-        if stream is not None and stream.isatty():
-            stream.write(_EXTENDED_ENTER_KEYS_SEQ)
-            stream.flush()
-            return True
-    except Exception:
-        return False
-    return False
-
-
-def _cli_multiline_shortcuts_enabled(config: Optional[Dict[str, Any]] = None) -> bool:
-    """Return whether classic CLI harness-standard multiline fallbacks are on.
-
-    Default is on to match the norm in adjacent agent harnesses: Ctrl+J is a
-    documented no-setup newline shortcut in Claude Code, OpenCode defaults
-    ``input_newline`` to include ``ctrl+j``, and Codex exposes Ctrl+J/keymap
-    newline behavior. Users on unusual POSIX PTYs that send bare LF for plain
-    Enter can set ``display.cli_multiline_shortcuts: false`` to restore the
-    legacy c-j submit fallback.
-    """
-    if config is None:
-        config = CLI_CONFIG
-    display = config.get("display") if isinstance(config, dict) else None
-    value = display.get("cli_multiline_shortcuts", True) if isinstance(display, dict) else True
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        normalized = value.strip().lower()
-        if normalized in {"1", "true", "yes", "on", "enabled"}:
-            return True
-        if normalized in {"0", "false", "no", "off", "disabled"}:
-            return False
-    return True
-
-
-def _is_backslash_line_continuation(text: str) -> bool:
-    """True when Enter should turn a trailing backslash into a newline."""
-    return bool(_BACKSLASH_LINE_CONTINUATION_RE.search(text or ""))
-
-
-def _apply_backslash_line_continuation(text: str) -> str:
-    """Replace a trailing ``\\`` marker with an actual newline."""
-    return _BACKSLASH_LINE_CONTINUATION_RE.sub("", text or "") + "\n"
 
 
 def _preserve_ctrl_enter_newline() -> bool:
@@ -4017,8 +3787,8 @@ def _preserve_ctrl_enter_newline() -> bool:
     NOT be bound to submit;
     binding it to submit makes Ctrl+Enter (intended as 'newline like Alt+Enter')
     submit instead. Local POSIX TTYs that deliver Enter as LF (docker exec,
-    some thin PTYs without SSH) still need c-j bound to submit when
-    display.cli_multiline_shortcuts is disabled, so we keep that legacy opt-out.
+    some thin PTYs without SSH) still need c-j bound to submit, so we keep
+    that binding for those.
 
     See issue #22379.
     """
@@ -4047,33 +3817,22 @@ def _preserve_ctrl_enter_newline() -> bool:
     return False
 
 
-def _bind_prompt_submit_keys(
-    kb,
-    handler,
-    *,
-    multiline_shortcuts_enabled: Optional[bool] = None,
-) -> None:
+def _bind_prompt_submit_keys(kb, handler) -> None:
     """Bind terminal Enter forms to the submit handler.
 
-    Enter is always submit. By default, c-j (Ctrl+J/LF) is left for the
-    multiline newline handler because that is the common agent-harness UX.
-    Users can set ``display.cli_multiline_shortcuts: false`` to restore the
-    legacy POSIX fallback that binds c-j to submit on local thin PTYs whose
-    plain Enter arrives as LF instead of CR.
+    Enter is always submit. On POSIX we also bind c-j (LF) to submit because
+    some thin PTYs (docker exec, certain SSH flavors) deliver Enter as LF
+    instead of CR — without this, Enter appears dead on those terminals.
 
-    Even when the setting is disabled, environments where Ctrl+Enter is known
-    to arrive as c-j (Windows, WSL, SSH, Windows Terminal, Ghostty) keep c-j
-    reserved for newline; otherwise Ctrl+Enter submits instead of composing.
+    Exception: on Windows, WSL, SSH sessions, Windows Terminal, and Ghostty,
+    c-j is the wire encoding of Ctrl+Enter (a distinct keystroke from
+    plain Enter / c-m). We leave c-j unbound there so the c-j newline
+    handler registered separately can fire — giving the user an
+    Enter-involving newline keystroke without terminal settings changes.
     See _preserve_ctrl_enter_newline() and issue #22379.
     """
-    if multiline_shortcuts_enabled is None:
-        multiline_shortcuts_enabled = _cli_multiline_shortcuts_enabled()
     kb.add("enter")(handler)
-    if (
-        sys.platform != "win32"
-        and not multiline_shortcuts_enabled
-        and not _preserve_ctrl_enter_newline()
-    ):
+    if sys.platform != "win32" and not _preserve_ctrl_enter_newline():
         kb.add("c-j")(handler)
 
 
@@ -4872,27 +4631,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             or os.getenv("HERMES_INFERENCE_PROVIDER")
             or "auto"
         )
-        # `--provider <custom>` without `-m` must use that entry's
-        # default_model. Otherwise the global model.default is sent to the
-        # custom endpoint and the compressor inherits the wrong context
-        # length (#86978). Explicit `-m` still wins.
-        if not model and provider:
-            try:
-                from hermes_cli.runtime_provider import _get_named_custom_provider
-
-                _named_custom = _get_named_custom_provider(provider)
-            except Exception as exc:
-                logger.warning(
-                    "Could not resolve --provider %s default model; "
-                    "keeping global model.default (%s)",
-                    provider,
-                    exc,
-                )
-                _named_custom = None
-            _provider_default = str((_named_custom or {}).get("model") or "").strip()
-            if _provider_default:
-                self.model = _provider_default
-                self._model_is_default = False
         self._provider_source: Optional[str] = None
         self.provider = self.requested_provider
         self.api_mode = "chat_completions"
@@ -4933,9 +4671,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         
         # Parse and validate toolsets
         self.enabled_toolsets = toolsets
-        from agent.skill_utils import parse_config_string_list
-
-        self.disabled_toolsets = parse_config_string_list(CLI_CONFIG["agent"].get("disabled_toolsets"))
+        self.disabled_toolsets = CLI_CONFIG["agent"].get("disabled_toolsets") or []
 
         if toolsets and "all" not in toolsets and "*" not in toolsets:
             # Validate each toolset — MCP server names are resolved via
@@ -5106,7 +4842,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             timestamp_str = self.session_start.strftime("%Y%m%d_%H%M%S")
             short_uuid = uuid.uuid4().hex[:6]
             self.session_id = f"{timestamp_str}_{short_uuid}"
-        getattr(self, "_write_terminal_breadcrumb", lambda: None)()
         
         # History file for persistent input recall across sessions
         self._history_file = _hermes_home / ".hermes_history"
@@ -6380,9 +6115,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             display = cfg.get("display", {}) if isinstance(cfg.get("display"), dict) else {}
             pet_cfg = display.get("pet", {}) if isinstance(display.get("pet"), dict) else {}
 
-            from utils import is_truthy_value
-
-            enabled = is_truthy_value(pet_cfg.get("enabled"), default=False)
+            enabled = bool(pet_cfg.get("enabled"))
             slug = str(pet_cfg.get("slug", "") or "")
             scale = float(pet_cfg.get("scale", constants.DEFAULT_SCALE) or constants.DEFAULT_SCALE)
             cols = constants.resolve_cols(scale, pet_cfg.get("unicode_cols", 0))
@@ -8570,16 +8303,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         except Exception:
             return
 
-        # The reset sequence above pops kitty keyboard mode and resets
-        # modifyOtherKeys too — re-request extended keys so Shift+Enter /
-        # modified-key reporting isn't silently dead for the rest of the
-        # session after a recovery (sibling of the startup push).
-        try:
-            if _cli_multiline_shortcuts_enabled(self.config or CLI_CONFIG):
-                _enable_extended_enter_keys(output)
-        except Exception:
-            pass
-
         logger.warning("Recovered terminal input modes after leak: %s", reason)
         if not self._input_mode_recovery_notice_shown:
             self._input_mode_recovery_notice_shown = True
@@ -8893,7 +8616,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 )
 
         _cprint(f"\n  {_DIM}Tip: Just type your message to chat with Hermes!{_RST}")
-        _cprint(f"  {_DIM}Multi-line: Ctrl+J, Alt+Enter, or \\+Enter for a new line{_RST}")
+        _cprint(f"  {_DIM}Multi-line: Alt+Enter for a new line{_RST}")
         _cprint(f"  {_DIM}Draft editor: Ctrl+G (Alt+G in VSCode/Cursor){_RST}")
         if _is_termux_environment():
             _cprint(f"  {_DIM}Attach image: /image {_termux_example_image_path()} or start your prompt with a local image path{_RST}\n")
@@ -9312,7 +9035,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         timestamp_str = self.session_start.strftime("%Y%m%d_%H%M%S")
         short_uuid = uuid.uuid4().hex[:6]
         self.session_id = f"{timestamp_str}_{short_uuid}"
-        getattr(self, "_write_terminal_breadcrumb", lambda: None)()
         self.conversation_history = []
         self._pending_title = None
         self._resumed = False
@@ -9516,71 +9238,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         return True
 
 
-    def save_conversation(self, cmd: str = "/save"):
-        """Handle /save — export the current session to json, md, or html.
+    def save_conversation(self):
+        """Save the current conversation to a JSON snapshot under ~/.hermes/sessions/saved/.
 
-        Usage: ``/save [json|md|html] [filename] [redact]``
-
-        The snapshot is a convenience export for sharing or off-line
-        inspection; every message is already persisted incrementally to the
-        SQLite session DB, so the live session remains resumable via
-        ``hermes --resume <id>`` regardless of whether the user ever runs
-        ``/save``. ``redact`` runs the export through the force-mode secret
-        redaction pass before writing.
+        The snapshot is a convenience export for sharing or off-line inspection;
+        every message is already persisted incrementally to the SQLite session
+        DB, so the live session remains resumable via ``hermes --resume <id>``
+        regardless of whether the user ever runs ``/save``.
         """
-        from hermes_cli.session_export import (
-            SAVE_USAGE,
-            normalize_save_format,
-            render_session_for_save,
-        )
-
-        parts = cmd.split()[1:]
-        if not parts:
-            print(SAVE_USAGE)
+        if not self.conversation_history:
+            print("(;_;) No conversation to save.")
             return
-        redact = False
-        if parts[-1].lower() in ("redact", "--redact"):
-            redact = True
-            parts = parts[:-1]
-            if not parts:
-                print(SAVE_USAGE)
-                return
-
-        try:
-            fmt = normalize_save_format(parts[0])
-        except ValueError as e:
-            print(f"(._.) {e}")
-            print(SAVE_USAGE)
-            return
-        filename = parts[1] if len(parts) > 1 else None
-
-        # Prefer the durable DB row (has metadata + tool calls); fall back to
-        # the in-memory history for sessions that never touched the DB.
-        # getattr: test doubles (SimpleNamespace / object.__new__) may not
-        # carry _session_db or session_id.
-        session_data = None
-        _db = getattr(self, "_session_db", None)
-        _sid = getattr(self, "session_id", None)
-        if _db and _sid:
-            try:
-                session_data = _db.export_session(_sid)
-            except Exception:
-                session_data = None
-        if not session_data:
-            if not self.conversation_history:
-                print("(;_;) No conversation to save.")
-                return
-            session_data = {
-                "id": self.session_id,
-                "model": self.model,
-                "started_at": self.session_start.timestamp(),
-                "messages": self.conversation_history,
-            }
-
-        if redact:
-            from hermes_cli.session_export_md import redact_session_data
-
-            session_data = redact_session_data(session_data)
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         saved_dir = get_hermes_home() / "sessions" / "saved"
@@ -9589,19 +9257,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         except Exception as e:
             print(f"(x_x) Failed to create save directory {saved_dir}: {e}")
             return
-        if filename:
-            path = Path(filename).expanduser()
-            if not path.is_absolute():
-                path = Path.cwd() / path
-        else:
-            path = saved_dir / f"hermes_conversation_{timestamp}.{fmt}"
+        path = saved_dir / f"hermes_conversation_{timestamp}.json"
 
         try:
-            content = render_session_for_save(session_data, fmt)
             with open(path, "w", encoding="utf-8") as f:
-                f.write(content)
-            label = {"json": "JSON", "md": "Markdown", "html": "HTML"}[fmt]
-            print(f"(^_^)v Conversation saved to: {path} ({label})")
+                json.dump({
+                    "model": self.model,
+                    "session_id": self.session_id,
+                    "session_start": self.session_start.isoformat(),
+                    "messages": self.conversation_history,
+                }, f, indent=2, ensure_ascii=False)
+            print(f"(^_^)v Conversation snapshot saved to: {path}")
             if self.session_id:
                 print(f"       Resume the live session with: hermes --resume {self.session_id}")
         except Exception as e:
@@ -11358,7 +11024,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         elif canonical == "branch":
             self._handle_branch_command(cmd_original)
         elif canonical == "save":
-            self.save_conversation(cmd_original)
+            self.save_conversation()
         elif canonical == "cron":
             self._handle_cron_command(cmd_original)
         elif canonical == "suggestions":
@@ -12325,22 +11991,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         }
         _cprint(labels.get(self.tool_progress_mode, ""))
 
-    def _write_terminal_breadcrumb(self) -> None:
-        """Record this terminal's live session for bare ``hermes -c``.
-
-        Called at session start and whenever ``self.session_id`` is
-        reassigned mid-run (/new, /branch, auto-compression rotation) so a
-        later bare ``-c`` in THIS terminal resumes THIS conversation's live
-        tip. Best-effort — never raises, no-op without a terminal identity
-        or when session.terminal_continue is false.
-        """
-        try:
-            from hermes_cli.terminal_breadcrumbs import write_breadcrumb
-
-            write_breadcrumb(self.session_id)
-        except Exception:
-            pass
-
     def _transfer_session_yolo(self, old_session_id: str, new_session_id: str) -> None:
         """Move YOLO bypass state from an old session key to a new one.
 
@@ -12664,7 +12314,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     and self.agent.session_id != self.session_id
                 ):
                     self.session_id = self.agent.session_id
-                    getattr(self, "_write_terminal_breadcrumb", lambda: None)()
                     self._pending_title = None
                     # Manual /compress replaces conversation_history with a new
                     # compressed handoff for the child session. Persist it from
@@ -15323,11 +14972,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             agent._persist_user_message_idx = None
             agent._persist_user_message_override = None
             agent._persist_user_message_timestamp = None
-            from agent.message_metadata import stamp_message_timestamp
-
-            staged_user_message = stamp_message_timestamp(
-                {"role": "user", "content": message}
-            )
+            staged_user_message = {"role": "user", "content": message}
             agent._pending_cli_user_message = staged_user_message
             self.conversation_history.append(staged_user_message)
 
@@ -15739,7 +15384,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             ):
                 self._transfer_session_yolo(self.session_id, self.agent.session_id)
                 self.session_id = self.agent.session_id
-                getattr(self, "_write_terminal_breadcrumb", lambda: None)()
                 self._pending_title = None
 
             # Get the final response
@@ -16124,7 +15768,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             agent._persist_session(messages, conversation_history)
             if getattr(agent, "session_id", None):
                 self.session_id = agent.session_id
-                getattr(self, "_write_terminal_breadcrumb", lambda: None)()
 
         try:
             if persist_lock is None:
@@ -16707,8 +16350,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # Key bindings for the input area
         kb = KeyBindings()
 
-        _multiline_shortcuts_enabled = _cli_multiline_shortcuts_enabled(self.config or CLI_CONFIG)
-
         from prompt_toolkit.keys import Keys as _IgnoreKeys
 
         @kb.add(_IgnoreKeys.Ignore, eager=True)
@@ -16863,18 +16504,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 return
 
             # --- Normal input routing ---
-            raw_text = event.app.current_buffer.text
-            if (
-                _multiline_shortcuts_enabled
-                and event.app.current_buffer.cursor_position == len(raw_text)
-                and _is_backslash_line_continuation(raw_text)
-            ):
-                continued = _apply_backslash_line_continuation(raw_text)
-                event.app.current_buffer.text = continued
-                event.app.current_buffer.cursor_position = len(continued)
-                event.app.invalidate()
-                return
-            text = raw_text.strip()
+            text = event.app.current_buffer.text.strip()
             has_images = bool(self._attached_images)
             if text or has_images:
                 # Handle /model directly on the UI thread so interactive pickers
@@ -17028,11 +16658,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 self._inline_pastes(event.app.current_buffer)
                 event.app.current_buffer.reset(append_to_history=True)
 
-        _bind_prompt_submit_keys(
-            kb,
-            handle_enter,
-            multiline_shortcuts_enabled=_multiline_shortcuts_enabled,
-        )
+        _bind_prompt_submit_keys(kb, handle_enter)
         
         @kb.add('escape', 'enter')
         def handle_alt_enter(event):
@@ -17045,17 +16671,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             """
             event.current_buffer.insert_text('\n')
 
-        if _multiline_shortcuts_enabled or _preserve_ctrl_enter_newline():
+        if _preserve_ctrl_enter_newline():
             @kb.add('c-j')
             def handle_ctrl_enter_newline(event):
-                """Ctrl+J inserts a newline for multi-line input.
+                """Ctrl+Enter inserts a newline on Windows, WSL, SSH, and WT.
 
-                This is enabled by default to match Claude Code / Codex /
-                OpenCode behavior. On Windows Terminal and similar environments,
-                Ctrl+Enter is delivered as the same c-j key code, so this also
-                covers Ctrl+Enter there. Set display.cli_multiline_shortcuts:
-                false to restore legacy c-j submit behavior on unusual POSIX
-                PTYs where plain Enter arrives as LF.
+                Windows Terminal (incl. WSL/SSH sessions through it) delivers
+                Ctrl+Enter as LF (c-j), distinct from plain Enter (c-m). This
+                binding makes Ctrl+Enter the equivalent of Alt+Enter on those
+                terminals, giving an Enter-involving newline keystroke
+                without requiring terminal settings changes. Ctrl+J (the raw
+                LF keystroke) also triggers this by virtue of being the same
+                key code — a harmless side effect since Ctrl+J has no
+                conflicting Hermes binding. See issue #22379.
                 """
                 event.current_buffer.insert_text('\n')
 
@@ -17669,7 +17297,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             from hermes_cli.config import load_config
             from hermes_cli.voice import (
                 normalize_voice_record_key_for_prompt_toolkit,
-                pt_key_to_sequence,
                 voice_record_key_from_config,
             )
             _raw_key = voice_record_key_from_config(load_config())
@@ -17695,7 +17322,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # voice.record_key mid-session (Copilot round-13 on #19835).
         self.set_voice_record_key_cache(_raw_key)
 
-        @kb.add(*pt_key_to_sequence(_voice_key))
+        @kb.add(_voice_key)
         def handle_voice_record(event):
             """Toggle voice recording when voice mode is active.
 
@@ -19327,13 +18954,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 except Exception:
                     pass
                 # The app enables focus reporting + mouse tracking; record that
-                # so _run_cleanup resets them on exit (#36823). When multiline
-                # shortcuts are on, also ask supported terminals (e.g. iTerm2)
-                # to report modified keys distinctly (kitty protocol +
-                # modifyOtherKeys); the cleanup reset pops both modes.
+                # so _run_cleanup resets them on exit (#36823).
                 _mark_tui_input_modes_active()
-                if _multiline_shortcuts_enabled:
-                    _enable_extended_enter_keys(app.output)
                 # Drive the petdex mascot animation (no-op when no pet enabled).
                 self._pet_start_anim()
                 app.run()
@@ -19917,14 +19539,6 @@ def main(
         # agent must wait the full MCP cold-start bound before its first
         # (and only) tool snapshot. See #51316.
         cli._single_query_mode = True
-        # Mark single-query for the approval gate. cli.py sets
-        # HERMES_INTERACTIVE earlier for interactive sudo prompts, but a -q
-        # run has NO user waiting to answer approval prompts. The gate reads
-        # this marker (via gateway.session_context.get_session_env, which falls
-        # back to os.environ when the session-context layer isn't engaged) and
-        # takes the deterministic approvals.single_query_mode path instead of
-        # waiting the full timeout. See #86878.
-        os.environ["HERMES_SINGLE_QUERY_SESSION"] = "1"
         if not cli._claim_active_session("cli", stderr=bool(quiet)):
             sys.exit(1)
         try:

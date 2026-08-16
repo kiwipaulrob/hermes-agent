@@ -919,13 +919,7 @@ class TestBuildSystemPrompt:
         """Timestamp must be date-only (no HH:MM) so the system prompt
         stays byte-stable for the full day. Minute precision invalidates
         prefix-cache KV on every rebuild path (compression, fresh-agent
-        gateway turns, session resume without a stored prompt).
-
-        The trailing zone parenthetical -- e.g. ``(America/New_York, EDT,
-        UTC-04:00)`` -- is exempt from the HH:MM check: a UTC offset is not
-        time-of-day and is constant for the whole day (it shifts only at a DST
-        transition), so it does not affect cache stability.
-        """
+        gateway turns, session resume without a stored prompt)."""
         prompt = agent._build_system_prompt()
         # Find the line and strip it for inspection
         for line in prompt.splitlines():
@@ -935,42 +929,13 @@ class TestBuildSystemPrompt:
                     f"Timestamp line has time-of-day, breaks daily cache stability: {line!r}"
                 )
                 # Must NOT contain a colon followed by two digits (HH:MM pattern)
-                # in the date portion, i.e. everything before the zone suffix.
                 import re as _re
-                date_part = line.split(" (")[0]
-                assert not _re.search(r":\d{2}", date_part), (
+                assert not _re.search(r":\d{2}", line), (
                     f"Timestamp line has HH:MM, breaks daily cache stability: {line!r}"
                 )
                 break
         else:
             assert False, "Expected a 'Conversation started:' line in the system prompt"
-
-    def test_datetime_includes_utc_offset(self, agent):
-        """Timestamp must carry an explicit UTC offset.
-
-        Tools that accept instants (e.g. nutrition/calendar MCP servers) reject
-        naive datetimes and require an offset. With a bare date the model has to
-        infer EST vs EDT on its own, which is a coin-flip near a DST boundary and
-        silently writes records onto the wrong day when it guesses wrong.
-        """
-        prompt = agent._build_system_prompt()
-        import re as _re
-        for line in prompt.splitlines():
-            if line.startswith("Conversation started:"):
-                assert _re.search(r"UTC[+-]\d{2}:\d{2}", line), (
-                    f"Timestamp line is missing a UTC offset: {line!r}"
-                )
-                break
-        else:
-            assert False, "Expected a 'Conversation started:' line in the system prompt"
-
-    def test_datetime_line_is_stable_across_rebuilds(self, agent):
-        """Two rebuilds within the same day must produce a byte-identical
-        timestamp line, or the prefix cache is invalidated on every rebuild."""
-        def _line(p):
-            return next(ln for ln in p.splitlines()
-                        if ln.startswith("Conversation started:"))
-        assert _line(agent._build_system_prompt()) == _line(agent._build_system_prompt())
 
     def test_includes_nous_subscription_prompt(self, agent, monkeypatch):
         monkeypatch.setattr(run_agent, "build_nous_subscription_prompt", lambda tool_names: "NOUS SUBSCRIPTION BLOCK")
@@ -2029,8 +1994,8 @@ class TestConcurrentToolExecution:
             lambda _name, args, callback, **_kwargs: callback(args),
         )
         monkeypatch.setattr(
-            "hermes_cli.plugins._dispatch_pre_tool_call_hooks",
-            lambda *_args, **_kwargs: (None, None),
+            "hermes_cli.plugins.resolve_pre_tool_block",
+            lambda *_args, **_kwargs: None,
         )
         monkeypatch.setattr(
             "agent.tool_executor._begin_tool_execution",
@@ -2091,8 +2056,8 @@ class TestConcurrentToolExecution:
         messages = []
 
         monkeypatch.setattr(
-            "hermes_cli.plugins._dispatch_pre_tool_call_hooks",
-            lambda *args, **kwargs: ("Blocked by policy", None),
+            "hermes_cli.plugins.resolve_pre_tool_block",
+            lambda *args, **kwargs: "Blocked by policy",
         )
         agent._checkpoint_mgr.enabled = True
         agent._checkpoint_mgr.ensure_checkpoint = MagicMock(
@@ -2181,8 +2146,8 @@ class TestConcurrentToolExecution:
         """Blocked memory tool should not reset the nudge counter."""
         agent._turns_since_memory = 5
         monkeypatch.setattr(
-            "hermes_cli.plugins._dispatch_pre_tool_call_hooks",
-            lambda *args, **kwargs: ("Blocked", None),
+            "hermes_cli.plugins.resolve_pre_tool_block",
+            lambda *args, **kwargs: "Blocked",
         )
         with patch("tools.memory_tool.memory_tool", side_effect=AssertionError("should not run")):
             result = agent._invoke_tool(
@@ -2215,8 +2180,8 @@ class TestConcurrentToolExecution:
             lambda _name, args, callback, **_kwargs: callback(args),
         )
         monkeypatch.setattr(
-            "hermes_cli.plugins._dispatch_pre_tool_call_hooks",
-            lambda *_args, **_kwargs: (None, None),
+            "hermes_cli.plugins.resolve_pre_tool_block",
+            lambda *_args, **_kwargs: None,
         )
         monkeypatch.setattr(tool_executor, "_begin_tool_execution", lambda *_a, **_k: None)
 
@@ -2270,8 +2235,8 @@ class TestConcurrentToolExecution:
             lambda _name, args, callback, **_kwargs: callback(args),
         )
         monkeypatch.setattr(
-            "hermes_cli.plugins._dispatch_pre_tool_call_hooks",
-            lambda *_args, **_kwargs: (None, None),
+            "hermes_cli.plugins.resolve_pre_tool_block",
+            lambda *_args, **_kwargs: None,
         )
         monkeypatch.setattr(tool_executor, "_begin_tool_execution", lambda *_a, **_k: None)
 
@@ -2336,8 +2301,8 @@ class TestAgentRuntimePostHookOwnershipSync:
 
         hook_calls = []
         monkeypatch.setattr(
-            "hermes_cli.plugins._dispatch_pre_tool_call_hooks",
-            lambda *args, **kwargs: (None, None),
+            "hermes_cli.plugins.resolve_pre_tool_block",
+            lambda *args, **kwargs: None,
         )
         monkeypatch.setattr(
             "hermes_cli.lifecycle.invoke_hook",
@@ -3531,12 +3496,10 @@ class TestRunConversation:
         # Partial reply is surfaced and persisted as an assistant turn so the
         # next turn remembers what the model said.
         assert result["final_response"] == "Sure, here's how to do it: first"
-        assert result["messages"][-1]["role"] == "assistant"
-        assert (
-            result["messages"][-1]["content"]
-            == "Sure, here's how to do it: first"
-        )
-        assert isinstance(result["messages"][-1]["timestamp"], float)
+        assert result["messages"][-1] == {
+            "role": "assistant",
+            "content": "Sure, here's how to do it: first",
+        }
 
     def test_redirect_during_thinking_retries_same_turn_with_context(self, agent):
         """A corrective follow-up does not end the turn, and displayed reasoning

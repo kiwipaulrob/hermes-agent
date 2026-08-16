@@ -138,9 +138,7 @@ function ZoneMenu({
         })}
         {minimizable &&
           renderActionItem(kit, {
-            // Same action-direction contract as the strip button below: the
-            // icon points where the zone will GO (restore opens upward).
-            icon: minimized ? 'chevron-up' : 'chevron-down',
+            icon: minimized ? 'chevron-down' : 'chevron-up',
             label: minimized ? t.zones.restore : t.zones.minimize,
             onSelect: () => setTreeGroupMinimized(nodeId, !minimized)
           })}
@@ -438,7 +436,7 @@ export function TreeGroup({
                     onPointerDown={e => e.stopPropagation()}
                     type="button"
                   >
-                    <Codicon name={node.minimized ? 'chevron-up' : 'chevron-down'} size="0.75rem" />
+                    <Codicon name={node.minimized ? 'chevron-down' : 'chevron-up'} size="0.75rem" />
                   </button>
                 )}
                 <StripDropCaret groupId={node.id} stripRef={stripRef} />

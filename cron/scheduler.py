@@ -338,9 +338,7 @@ def _resolve_cron_disabled_toolsets(cfg: dict) -> list[str]:
     else:
         disabled = ["cronjob", "messaging", "clarify", "memory"]
     agent_cfg = (cfg or {}).get("agent") or {}
-    from agent.skill_utils import parse_config_string_list
-
-    user_disabled = parse_config_string_list(agent_cfg.get("disabled_toolsets"))
+    user_disabled = agent_cfg.get("disabled_toolsets") or []
     for name in user_disabled:
         name = str(name).strip()
         if name and name not in disabled:
@@ -3108,52 +3106,6 @@ def _drain_script_pipes(proc: subprocess.Popen) -> None:
         pass
 
 
-def _windows_cron_bootstrap_argv(
-    python_exe: str,
-    env_overlay: dict[str, str],
-    script_path: str,
-) -> list[str]:
-    """Bootstrap a cron script under the base interpreter with ``.pth`` support.
-
-    The uv-venv overlay mode runs the base ``python.exe`` (to avoid the
-    launcher re-execing a console interpreter and flashing a window) and
-    re-attaches the venv via ``PYTHONPATH``.  But ``PYTHONPATH`` entries are
-    plain ``sys.path`` additions — Python's site initialization never
-    processes ``.pth`` files for them (only ``site.addsitedir()`` does) — so
-    editable installs (``pip install -e``, ``__editable__*.pth`` links) are
-    invisible to cron script jobs.
-
-    Bootstrap with ``site.addsitedir()`` on the venv ``site-packages``, then
-    exec the script as ``__main__``.  ``runpy.run_path`` keeps ``__file__``
-    correct; ``sys.path[0]`` is set to the script's directory to preserve the
-    ``python script.py`` import semantics.  Note: ``runpy`` does not set
-    ``__package__``/``__spec__`` the way a direct invocation does, so
-    package-relative imports (``from . import x``) may behave differently.
-    Falls back to a plain invocation if the venv layout is unresolvable —
-    the pre-existing PYTHONPATH behaviour is strictly better than failing
-    to run at all.
-    """
-    site_packages = Path(env_overlay.get("VIRTUAL_ENV", "")) / "Lib" / "site-packages"
-    if not site_packages.is_dir():
-        # Silent here would make the "editable installs invisible" failure
-        # undiagnosable; the pre-existing PYTHONPATH-only behaviour applies.
-        logger.warning(
-            "Windows cron script: venv site-packages %s not found; running "
-            "without .pth processing (editable installs may be unimportable)",
-            site_packages,
-        )
-        return [python_exe, script_path]
-    bootstrap = (
-        "import os, runpy, site, sys;"
-        f"site.addsitedir({str(site_packages)!r});"
-        "script = sys.argv[1];"
-        "sys.argv = [script] + sys.argv[2:];"
-        "sys.path.insert(0, os.path.dirname(os.path.abspath(script)));"
-        "runpy.run_path(script, run_name='__main__')"
-    )
-    return [python_exe, "-c", bootstrap, script_path]
-
-
 def _run_job_script(
     script_path: str,
     workdir: Optional[str] = None,
@@ -3198,18 +3150,6 @@ def _run_job_script(
     scripts_dir = _get_hermes_home() / "scripts"
     scripts_dir.mkdir(parents=True, exist_ok=True)
     scripts_dir_resolved = scripts_dir.resolve()
-
-    # Same ingestion contract as cron.lifecycle_guard._expand_candidate_path:
-    # a NUL-bearing value can never name a real script, and on Windows the
-    # Path operations raise ValueError *after* expanduser (expanduser never
-    # expands "~user" there, so the try below never fires) — reject eagerly
-    # so both platforms fail cleanly instead of crashing the scheduler.
-    # str() first so the guard itself can never raise TypeError on a
-    # non-str script_path (e.g. a Path passed by a future caller) — the
-    # guard must be crash-proof even though every current call site
-    # passes a plain str (#86832 review).
-    if "\x00" in str(script_path):
-        return False, f"Blocked: script path contains a NUL byte: {script_path!r}"
 
     try:
         raw = Path(script_path).expanduser()
@@ -3267,13 +3207,7 @@ def _run_job_script(
         env_overlay: dict[str, str] = {}
     else:
         python_exe, env_overlay = _windows_cron_python_invocation(sys.executable)
-        if env_overlay:
-            # Overlay mode (Windows uv venv): PYTHONPATH alone cannot make
-            # editable installs importable — .pth processing needs
-            # site.addsitedir() (see _windows_cron_bootstrap_argv).
-            argv = _windows_cron_bootstrap_argv(python_exe, env_overlay, str(path))
-        else:
-            argv = [python_exe, str(path)]
+        argv = [python_exe, str(path)]
 
     try:
         from tools.environments.local import build_subprocess_env
@@ -6369,14 +6303,6 @@ def create_job_with_scheduler_registration(**kwargs) -> dict:
     return job
 
 
-# Dead-owner claim reclaim throttle (#86721): recover_interrupted_executions
-# opens the executions ledger, so the per-tick reap is rate-limited rather
-# than run on every idle 60s cycle. Tests may reset _last_dead_owner_reap_at
-# to None to force a reap on the next tick.
-_DEAD_OWNER_REAP_INTERVAL_SECONDS = 300.0
-_last_dead_owner_reap_at: Optional[float] = None
-
-
 def tick(
     verbose: bool = True,
     adapters=None,
@@ -6433,37 +6359,6 @@ def tick(
         if can_dispatch is not None and not can_dispatch():
             logger.debug("Cron dispatch paused while gateway drains existing work")
             return 0
-
-        # Dead-owner claim reclaim (#86721): execution rows carry their owner
-        # pid + process start time, but recovery previously ran only at
-        # scheduler STARTUP. A one-shot `hermes cron run` that claimed a job
-        # and died mid-run (its runner thread lived in the exiting CLI
-        # process) left the row 'claimed' forever while the long-lived
-        # gateway ticker kept running — blocking every future run of that
-        # job. Reap provably-dead owners periodically so stale claims
-        # auto-clear without a gateway restart. Only rows whose exact owner
-        # process is proved gone are touched (see _owner_is_live), so live
-        # runs in other processes are never rewritten. Throttled so idle
-        # 60s ticks don't pay a ledger connection every cycle (#33612).
-        global _last_dead_owner_reap_at
-        _reap_now = time.monotonic()
-        if (
-            _last_dead_owner_reap_at is None
-            or _reap_now - _last_dead_owner_reap_at >= _DEAD_OWNER_REAP_INTERVAL_SECONDS
-        ):
-            _last_dead_owner_reap_at = _reap_now
-            try:
-                from cron.executions import recover_interrupted_executions
-
-                _reclaimed = recover_interrupted_executions()
-                if _reclaimed:
-                    logger.warning(
-                        "Reclaimed %d cron execution(s) whose owner process died "
-                        "before reaching a terminal state (marked unknown)",
-                        _reclaimed,
-                    )
-            except Exception as _reap_exc:
-                logger.debug("Dead-owner execution reclaim failed: %s", _reap_exc)
 
         due_jobs = get_due_jobs()
 

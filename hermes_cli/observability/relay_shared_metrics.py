@@ -1026,8 +1026,7 @@ class _Runtime:
         try:
             self._run_in_task(
                 task,
-                relay_runtime.pop_relay_scope,
-                self.relay,
+                self.relay.scope.pop,
                 task.handle,
                 output=fields,
                 metadata=self._event_metadata(),
