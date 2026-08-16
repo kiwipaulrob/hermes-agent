@@ -2925,6 +2925,51 @@ def _show_skill_settings() -> None:
         pass
 
 
+def check_mark(ok: bool) -> str:
+    """Return a colored check/cross mark."""
+    if ok:
+        return color("\u2713", Colors.GREEN)
+    return color("\u2717", Colors.RED)
+
+
+def _show_messaging_platforms() -> None:
+    """Render every registered messaging platform with its configured state.
+
+    Derived from the shared platform registry (``platform_registry.all_entries()``)
+    so built-in and plugin platforms show automatically instead of the
+    hardcoded Telegram/Discord pair. Configured state comes from each entry's
+    ``required_env`` contract — the same list ``hermes setup`` displays — and
+    NEVER from ``check_fn()``, which is a passive SDK-availability probe that
+    must stay side-effect free (#79812). A platform with no env contract
+    (e.g. A2A) needs nothing from the environment and renders as configured
+    by default.
+    """
+    _section("Messaging Platforms")
+    try:
+        # Ensure plugin platforms are discovered so the registry is populated.
+        from hermes_cli.plugins import get_plugin_manager
+        get_plugin_manager().discover_and_load()
+    except Exception:
+        pass
+    try:
+        from gateway.platform_registry import platform_registry
+        entries = platform_registry.all_entries()
+        if not entries:
+            print(f"  {color('(no platforms registered)', Colors.DIM)}")
+            return
+        for entry in sorted(entries, key=lambda e: e.label.lower()):
+            if entry.required_env:
+                configured = all(get_env_value(var) for var in entry.required_env)
+                status_str = "configured" if configured else "not configured"
+                print(f"  {entry.label:<24} {check_mark(configured)} {status_str}")
+            else:
+                # No env contract (A2A): nothing to configure in the environment,
+                # so the platform is available by default.
+                print(f"  {entry.label:<24} {check_mark(True)} configured (no env required)")
+    except Exception:
+        print(f"  {color('(registry unavailable)', Colors.DIM)}")
+
+
 def show_config():
     """Display current configuration."""
     config = load_config()
@@ -2957,10 +3002,7 @@ def show_config():
     _show_compression_section(config)
     _show_aux_overrides(config)
 
-    _section("Messaging Platforms")
-    for label, env_key in (("Telegram", "TELEGRAM_BOT_TOKEN"), ("Discord", "DISCORD_BOT_TOKEN")):
-        state = 'configured' if get_env_value(env_key) else color('not configured', Colors.DIM)
-        print(f"  {label + ':':<13} {state}")
+    _show_messaging_platforms()
 
     _show_skill_settings()
 

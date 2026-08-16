@@ -1594,6 +1594,79 @@ feishu:
         assert raw["feishu"]["require_mention"] is True
 
 
+class TestShowConfigPlatforms:
+    """`show_config()` must surface messaging platforms via the shared platform
+    registry and required-env vars — not the hardcoded Telegram/Discord pair
+    and not `check_fn()` (a passive SDK probe that must stay side-effect
+    free). Regression for PR #64049."""
+
+    @staticmethod
+    def _row(out: str, label: str) -> str:
+        """Return the output line for the platform row starting with *label*."""
+        for ln in out.splitlines():
+            if ln.strip().startswith(label):
+                return ln.strip()
+        raise AssertionError(f"platform row {label!r} not found in config output")
+
+    def test_irc_row_flips_with_its_own_env_vars(self, monkeypatch, capsys):
+        """The IRC row must track IRC's env vars specifically: 'not configured'
+        when they are absent, 'configured' when they are present — asserted on
+        the IRC row itself, not on a global substring."""
+        for var in ("IRC_SERVER", "IRC_CHANNEL", "IRC_NICKNAME"):
+            monkeypatch.delenv(var, raising=False)
+
+        from hermes_cli.config import show_config
+
+        show_config()
+        out = capsys.readouterr().out
+
+        # Never a traceback or Error in config display.
+        assert "Traceback" not in out
+        assert "Error" not in out
+
+        row = self._row(out, "IRC")
+        assert "not configured" in row, f"IRC row must show not configured when env vars are absent: {row!r}"
+        assert "✗" in row
+
+        # Now set IRC's env vars and verify the IRC row flips to configured.
+        monkeypatch.setenv("IRC_SERVER", "irc.example.com")
+        monkeypatch.setenv("IRC_CHANNEL", "#hermes")
+        monkeypatch.setenv("IRC_NICKNAME", "hermes-test")
+
+        show_config()
+        out2 = capsys.readouterr().out
+
+        row2 = self._row(out2, "IRC")
+        assert "configured" in row2 and "not configured" not in row2, (
+            f"IRC row must flip to configured when its env vars are set: {row2!r}"
+        )
+        assert "✓" in row2
+
+    def test_no_env_contract_platform_shows_configured_by_default(self, monkeypatch, capsys):
+        """A platform with an empty required_env (A2A — nothing to configure in
+        the environment) must not be misreported as 'not configured'; it renders
+        as available by default."""
+        from hermes_cli.config import show_config
+
+        show_config()
+        out = capsys.readouterr().out
+
+        row = self._row(out, "A2A")
+        assert "configured (no env required)" in row, f"A2A row must render its default state: {row!r}"
+
+    def test_registry_driven_output_includes_non_hardcoded_platforms(self, monkeypatch, capsys):
+        """Platforms beyond the old Telegram/Discord hardcode (e.g. Email) must
+        appear in config output at all."""
+        from hermes_cli.config import show_config
+
+        show_config()
+        out = capsys.readouterr().out
+
+        assert self._row(out, "Email"), "Email platform must appear in config output"
+        assert self._row(out, "Telegram"), "Telegram platform must still appear in config output"
+        assert self._row(out, "Discord"), "Discord platform must still appear in config output"
+
+
 class TestVerifyOnStopMigration:
     """v30 → v31: switch verify_on_stop OFF once, preserving explicit choices."""
 
