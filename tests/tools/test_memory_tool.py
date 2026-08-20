@@ -706,3 +706,71 @@ class TestBomToleranceInMemoryFiles:
         raw, read_ok = MemoryStore._read_raw_checked(path)
         assert read_ok is False
         assert raw == ""
+
+
+# =========================================================================
+# Built-in tool gating (check_fn) — provider-backed setups must not
+# advertise a tool that can only fail (see #60805, #32624).
+# =========================================================================
+
+class TestMemoryToolCheckFn:
+    """check_memory_requirements() must agree with the _memory_store predicate.
+
+    The `memory` toolset stays enabled so external-provider tools (memos_*)
+    pass the toolset gate, but the native `memory` tool itself is filtered out
+    whenever the built-in store cannot work (memory_enabled false + no
+    user_profile_enabled). Advertising a tool that only errors invites agents
+    to "fix" a correct provider-backed config.
+    """
+
+    @pytest.fixture
+    def isolate_home(self, tmp_path, monkeypatch):
+        """Point HERMES_HOME at a temp dir so raw-config reads are hermetic."""
+        from hermes_constants import get_hermes_home
+
+        home = tmp_path / ".hermes"
+        home.mkdir(exist_ok=True)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        return home
+
+    def test_default_no_memory_section_is_enabled(self, isolate_home):
+        """A user with no memory section gets the built-in default (enabled)."""
+        from tools.memory_tool import check_memory_requirements
+
+        assert check_memory_requirements() is True
+
+    def test_memory_enabled_true_is_advertised(self, isolate_home):
+        (isolate_home / "config.yaml").write_text(
+            "memory:\n  memory_enabled: true\n  user_profile_enabled: false\n"
+        )
+        from tools.memory_tool import check_memory_requirements
+
+        assert check_memory_requirements() is True
+
+    def test_memory_enabled_false_hides_native_tool(self, isolate_home):
+        (isolate_home / "config.yaml").write_text(
+            "memory:\n  memory_enabled: false\n  user_profile_enabled: false\n"
+        )
+        from tools.memory_tool import check_memory_requirements
+
+        assert check_memory_requirements() is False
+
+    def test_user_profile_enabled_keeps_tool(self, isolate_home):
+        (isolate_home / "config.yaml").write_text(
+            "memory:\n  memory_enabled: false\n  user_profile_enabled: true\n"
+        )
+        from tools.memory_tool import check_memory_requirements
+
+        assert check_memory_requirements() is True
+
+    def test_config_read_error_fails_open(self, monkeypatch):
+        """A config read failure must never hide memory (fail-open True)."""
+        import hermes_cli.config as hc
+
+        def boom():
+            raise RuntimeError("config unreadable")
+
+        monkeypatch.setattr(hc, "read_raw_config_readonly", boom)
+        from tools.memory_tool import builtin_memory_enabled
+
+        assert builtin_memory_enabled() is True
