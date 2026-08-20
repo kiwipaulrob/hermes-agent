@@ -544,6 +544,19 @@ class DeliveryRouter:
             }
 
         send_metadata = dict(metadata or {})
+        # Cron email deliveries without a thread anchor must not inherit the
+        # sender's last inbound subject — Gmail would thread the report into
+        # that conversation (e.g. a nightly backup landing inside a "floor
+        # plans" thread). Give them an explicit fresh-conversation subject the
+        # adapter uses verbatim (no Re: prefix, no References header).
+        if (
+            target.platform == Platform.EMAIL
+            and "subject" not in send_metadata
+            and "thread_id" not in send_metadata
+            and (metadata or {}).get("job_id")
+        ):
+            job_name = (metadata or {}).get("job_name") or (metadata or {}).get("job_id", "cron")
+            send_metadata["subject"] = f"Cronjob Response: {job_name}"
         if transport.is_relay:
             home = self.config.get_home_channel(target.platform)
             if home is not None and home.chat_id == target.chat_id:
