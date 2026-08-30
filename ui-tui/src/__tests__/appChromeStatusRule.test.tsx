@@ -104,6 +104,21 @@ const baseProps = {
   voiceLabel: ''
 }
 
+describe('StatusRule model provider label', () => {
+  it('appends the provider to the model label when present', () => {
+    const element = StatusRule({ ...baseProps, modelProvider: 'z-ai' })
+
+    expect(textContent(element)).toContain('opus 4.8 z-ai')
+  })
+
+  it('omits the provider segment when no provider is reported', () => {
+    const element = StatusRule({ ...baseProps })
+
+    expect(textContent(element)).toContain('opus 4.8')
+    expect(textContent(element)).not.toContain('z-ai')
+  })
+})
+
 describe('StatusRule session title', () => {
   it('pins the named session at the far-right edge instead of the cwd label', () => {
     const element = StatusRule({
