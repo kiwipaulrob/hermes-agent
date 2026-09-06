@@ -147,6 +147,25 @@ Replies are sent via SMTP with proper email threading:
 - **Message-ID** generated with the agent's domain
 - Responses are sent as plain text (UTF-8)
 
+### Sessions and Threading
+
+Inbound messages are grouped into sessions by subject, so each distinct conversation gets its own agent session:
+
+- The subject is normalized into a stable slug (`Re:`/`Fwd:` prefixes stripped) and used as the thread identity; replies to the same subject rejoin the same session.
+- Thread context (subject, `Message-ID`, session generation) is persisted per account under `$HERMES_HOME/state`, so replies keep their thread's subject and threading headers across gateway restarts.
+
+To start a fresh session for a thread, email `/new` as the message body (optionally followed by a new request). A bare `/new` rotates the session and replies with a short confirmation without running the agent.
+
+Long-lived threads rotate to a fresh session automatically after `max_messages_per_session` inbound messages (default `1000`), keeping history re-processing cost bounded. Set it to `0` to disable auto-rotation:
+
+```yaml
+platforms:
+  email:
+    max_messages_per_session: 1000   # 0 disables auto-rotation
+```
+
+Cron and other scheduled email deliveries are sent as fresh conversations with a `Cronjob Response: <job>` subject, so a report is never threaded into a sender's existing conversation.
+
 ### File Attachments
 
 The agent can send file attachments in replies. Include `MEDIA:/path/to/file` in the response and the file is attached to the outgoing email.
