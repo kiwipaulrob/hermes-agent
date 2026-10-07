@@ -503,7 +503,9 @@ const shortModelLabel = (model: string) =>
     .trim()
 
 const modelLabel = (model: string, effort?: string, fast?: boolean, effortWire?: string, provider?: string) =>
-  [shortModelLabel(model), effortLabel(effort, effortWire), fast ? tr('status.fast') : '', provider].filter(Boolean).join(' ')
+  [shortModelLabel(model), effortLabel(effort, effortWire), fast ? tr('status.fast') : '', provider]
+    .filter(Boolean)
+    .join(' ')
 
 export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
   const [active, setActive] = useState(false)
