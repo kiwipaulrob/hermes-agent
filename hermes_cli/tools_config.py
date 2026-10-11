@@ -264,9 +264,6 @@ TOOL_CATEGORIES = {
             _row("Mistral Voxtral", "paid", "voxtral-mini-latest — multilingual",
                  [_key("MISTRAL_API_KEY", "Mistral API key", "https://console.mistral.ai/")], stt_provider="mistral"),
             _row("DeepInfra", "paid", "Live STT catalog from api.deepinfra.com", [_DEEPINFRA_KEY], stt_provider="deepinfra"),
-            _row("Home Assistant Cloud", "lan \u00b7 free", "Assist pipeline STT on your Home Assistant (LAN)",
-                 [_key("HASS_TOKEN", "Home Assistant long-lived access token", "http://homeassistant.local:8123/profile")],
-                 stt_provider="ha_cloud"),
         ],
     },
     "web": {

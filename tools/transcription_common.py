@@ -19,9 +19,6 @@ DEFAULT_STT_MODEL = os.getenv("STT_OPENAI_MODEL", "whisper-1")
 DEFAULT_GROQ_STT_MODEL = os.getenv("STT_GROQ_MODEL", "whisper-large-v3-turbo")
 DEFAULT_MISTRAL_STT_MODEL = os.getenv("STT_MISTRAL_MODEL", "voxtral-mini-latest")
 DEFAULT_ELEVENLABS_STT_MODEL = os.getenv("STT_ELEVENLABS_MODEL", "scribe_v2")
-DEFAULT_HA_CLOUD_URL = "http://homeassistant.local:8123"
-# Default assist pipeline carrying stt.home_assistant_cloud; override via stt.ha_cloud.pipeline.
-DEFAULT_HA_CLOUD_PIPELINE = "01j5gssf495tbq990ab6p10cv4"
 # Seconds for one STT HTTP request; shared by the OpenAI-SDK path and the QQ adapter so a
 # self-hosted model's cold start is not cut off at the old fixed 30s (#112939).
 DEFAULT_STT_TIMEOUT = 60.0
@@ -53,10 +50,9 @@ STT_MODEL_CATALOG = {
     "openai": ["whisper-1", "gpt-4o-mini-transcribe", "gpt-4o-transcribe", "gpt-transcribe"],
     "mistral": ["voxtral-mini-latest", "voxtral-mini-2602"],
     "xai": ["grok-voice-transcribe-2.0", "grok-voice-transcribe-1.0"],
-    "elevenlabs": ["scribe_v2", "scribe_v1"],
-    "ha_cloud": [DEFAULT_HA_CLOUD_PIPELINE]}
+    "elevenlabs": ["scribe_v2", "scribe_v1"]}
 # ElevenLabs historically uses ``model_id`` instead of ``model``.
-STT_MODEL_CONFIG_KEY = {"elevenlabs": "model_id", "ha_cloud": "pipeline"}
+STT_MODEL_CONFIG_KEY = {"elevenlabs": "model_id"}
 
 # Known model sets for auto-correction. Groq shut distil-whisper-large-v3-en down on
 # 2025-08-23 (console.groq.com/docs/deprecations); a config still naming it is remapped.
@@ -70,8 +66,7 @@ RETIRED_GROQ_MODELS = frozenset({"distil-whisper-large-v3-en"})
 # The plugin hook from issue #30398-style follow-up rejects plugins registering under any of these names;
 # the dispatcher in ``transcribe_audio`` short-circuits them defensively as well.
 BUILTIN_STT_PROVIDERS = frozenset({
-    "local", "local_command", "groq", "openai", "mistral", "xai", "elevenlabs", "deepinfra",
-    "ha_cloud"})
+    "local", "local_command", "groq", "openai", "mistral", "xai", "elevenlabs", "deepinfra"})
 # Built-in providers that upload audio to a remote API.
 CLOUD_STT_PROVIDERS = frozenset(BUILTIN_STT_PROVIDERS - {"local", "local_command"})
 

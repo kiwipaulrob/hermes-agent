@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Speech-to-text transcription used by the gateway for voice messages.
 
-Built-in providers: local (faster-whisper, default/free), local_command, ha_cloud
-(Home Assistant Cloud STT over LAN), groq, openai
+Built-in providers: local (faster-whisper, default/free), local_command, groq, openai
 (also serves the managed ``nous`` selection), mistral, xai, elevenlabs, deepinfra; plus
 user-declared command providers and plugin providers. ``transcribe_audio(path)`` returns
 ``{"success", "transcript", "error"?, "provider"?}``. This module owns provider resolution,
@@ -25,8 +24,7 @@ from typing import Optional, Dict, Any
 from utils import is_truthy_value
 from tools.transcription_common import (
     BUILTIN_STT_PROVIDERS, CLOUD_STT_PROVIDERS, DEFAULT_ELEVENLABS_STT_MODEL,
-    DEFAULT_GROQ_STT_MODEL, DEFAULT_HA_CLOUD_PIPELINE, DEFAULT_LOCAL_MODEL, DEFAULT_MISTRAL_STT_MODEL,
-    DEFAULT_PROVIDER,
+    DEFAULT_GROQ_STT_MODEL, DEFAULT_LOCAL_MODEL, DEFAULT_MISTRAL_STT_MODEL, DEFAULT_PROVIDER,
     DEFAULT_STT_MODEL, LOCAL_STT_COMMAND_ENV, LOCAL_STT_LANGUAGE_ENV,
     normalize_xai_stt_model, _error_result, _get_stt_section, _ok_result)
 from tools.transcription_audio import (
@@ -43,8 +41,6 @@ from tools.transcription_cloud import (  # noqa: F401  (handlers dispatched via 
     _has_xai_stt_credentials, _resolve_openai_audio_client_config, _transcribe_deepinfra,
     _transcribe_elevenlabs, _transcribe_groq, _transcribe_mistral, _transcribe_openai,
     _transcribe_xai)
-# ``_transcribe_ha_cloud`` is dispatched via globals() below; ``_has_ha_cloud`` gates selection.
-from tools.transcription_ha_cloud import _has_ha_cloud, _transcribe_ha_cloud  # noqa: F401
 from tools.transcription_command import (
     _apply_pre_transcription_hook, _dispatch_to_plugin_provider, _enforce_prompt_length_limit,
     _resolve_command_stt_provider_config, _transcribe_command_stt, _unregistered_stt_provider_error)
@@ -211,9 +207,6 @@ _has_deepinfra_key = _has_key("DEEPINFRA_API_KEY", "deepinfra", needs_openai=Tru
 # Mistral only auto-selects when the SDK is present — no lazy-install during passive
 # auto-detection (explicit ``provider: mistral`` installs on first use).
 _CLOUD_PROVIDER_SPECS = {
-    "ha_cloud": (_has_ha_cloud, _has_ha_cloud,
-             "STT provider 'ha_cloud' configured but HASS_TOKEN not set or Home Assistant unreachable",
-             "No local STT available, using Home Assistant Cloud STT"),
     "groq": (_has_groq_key, _has_groq_key,
              "STT provider 'groq' configured but GROQ_API_KEY not set",
              "No local STT available, using Groq Whisper API"),
@@ -255,8 +248,7 @@ def _resolve_explicit_provider(provider: str) -> str:
 
 def _get_provider(stt_config: dict) -> str:
     """Which STT provider to use: an explicit ``stt.provider`` is honoured (no silent cloud
-    fallback); otherwise auto-detect local > ha_cloud > groq > openai > mistral > xai >
-    elevenlabs > deepinfra."""
+    fallback); otherwise auto-detect local > groq > openai > mistral > xai > elevenlabs > deepinfra."""
     if not is_stt_enabled(stt_config):
         return "none"
     explicit = "provider" in stt_config
@@ -491,8 +483,7 @@ _BUILTIN_MODEL_KEYS = {
     "mistral": ("mistral", "model", DEFAULT_MISTRAL_STT_MODEL, False),
     "xai": ("xai", "model", "", True),  # blank -> normalize_xai_stt_model resolves env/default
     "elevenlabs": ("elevenlabs", "model_id", DEFAULT_ELEVENLABS_STT_MODEL, False),
-    "deepinfra": ("deepinfra", "model", "", True),
-    "ha_cloud": ("ha_cloud", "pipeline", DEFAULT_HA_CLOUD_PIPELINE, True)}
+    "deepinfra": ("deepinfra", "model", "", True)}
 
 
 def _builtin_model_name(provider: str, stt_config: Dict[str, Any], model: Optional[str]) -> str:
@@ -568,8 +559,8 @@ def _no_provider_error(provider: str, stt_config: Dict[str, Any]) -> Dict[str, A
         f"transcription, configure {LOCAL_STT_COMMAND_ENV} or install a local whisper CLI, "
         "set GROQ_API_KEY for free Groq Whisper, set MISTRAL_API_KEY for Mistral "
         "Voxtral Transcribe, configure xAI OAuth or set XAI_API_KEY for xAI Grok STT, "
-        "set ELEVENLABS_API_KEY for ElevenLabs Scribe, set HASS_TOKEN for Home Assistant "
-        "Cloud STT, or set VOICE_TOOLS_OPENAI_KEY or OPENAI_API_KEY for the OpenAI Whisper API.")
+        "set ELEVENLABS_API_KEY for ElevenLabs Scribe, or set VOICE_TOOLS_OPENAI_KEY "
+        "or OPENAI_API_KEY for the OpenAI Whisper API.")
 
 
 def transcribe_audio(
