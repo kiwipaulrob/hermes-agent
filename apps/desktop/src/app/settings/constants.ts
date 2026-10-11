@@ -248,10 +248,11 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   // modal/daytona/ssh). Remote backends need extra env (image, tokens, host).
   'terminal.backend': ['local', 'docker', 'singularity', 'modal', 'daytona', 'ssh'],
   'stt.elevenlabs.model_id': ['scribe_v2', 'scribe_v1'],
+  'stt.ha_cloud.pipeline': ['01j5gssf495tbq990ab6p10cv4'],
   'stt.local.model': ['tiny', 'base', 'small', 'medium', 'large-v3', 'turbo'],
   // Speech-to-text backends — kept in sync with BUILTIN_STT_PROVIDERS in
   // tools/transcription_common.py (local_command is auto-detected, not picked).
-  'stt.provider': ['local', 'groq', 'openai', 'mistral', 'xai', 'elevenlabs', 'deepinfra'],
+  'stt.provider': ['local', 'groq', 'openai', 'mistral', 'xai', 'elevenlabs', 'deepinfra', 'ha_cloud'],
   // How the desktop voice conversation is wired — tools/voice_live.py owns the
   // gpt-live branch (one full-duplex voice model delegating to Hermes).
   'voice.voice_chat_mode': ['chained', 'gpt-live'],
@@ -397,6 +398,7 @@ export const FREE_INPUT_KEYS = new Set([
   'stt.mistral.model',
   'stt.xai.model',
   'stt.deepinfra.model',
+  'stt.ha_cloud.pipeline',
   'tts.gemini.model',
   'tts.gemini.voice',
   'tts.xai.voice_id',
@@ -822,6 +824,7 @@ export const SECTIONS: DesktopConfigSection[] = [
       'stt.xai.model',
       'stt.deepinfra.model',
       'stt.elevenlabs.model_id',
+      'stt.ha_cloud.pipeline',
       'stt.elevenlabs.language_code',
       'stt.elevenlabs.tag_audio_events',
       'stt.elevenlabs.diarize',

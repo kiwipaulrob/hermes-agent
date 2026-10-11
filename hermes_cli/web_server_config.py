@@ -125,7 +125,8 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "edge", "elevenlabs", "openai", "xai", "minimax", "mistral", "gemini", "neutts", "kittentts", "piper",
     ),
     "stt.provider": _select(
-        "Speech-to-text provider", "local", "groq", "openai", "mistral", "xai", "elevenlabs", "deepinfra"),
+        "Speech-to-text provider", "local", "groq", "openai", "mistral", "xai", "elevenlabs", "deepinfra",
+        "ha_cloud"),
     "stt.local.model": _select("Local faster-whisper model size", *STT_MODEL_CATALOG["local"]),
     "stt.groq.model": _select("Groq Whisper model", *STT_MODEL_CATALOG["groq"]),
     "stt.openai.model": _select("OpenAI transcription model", *STT_MODEL_CATALOG["openai"]),
@@ -134,6 +135,7 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     "stt.mistral.model": _select("Mistral Voxtral transcription model", *STT_MODEL_CATALOG["mistral"]),
     "stt.xai.model": _select("xAI transcription model", *STT_MODEL_CATALOG["xai"]),
     "stt.elevenlabs.model_id": _select("ElevenLabs Scribe model", *STT_MODEL_CATALOG["elevenlabs"]),
+    "stt.ha_cloud.pipeline": _select("Home Assistant assist pipeline", *STT_MODEL_CATALOG["ha_cloud"]),
     "display.skin": _select("CLI visual theme", "default", "ares", "mono", "slate"),
     "dashboard.theme": _select(
         "Web dashboard visual theme", "default", "midnight", "ember", "mono", "cyberpunk", "rose"
