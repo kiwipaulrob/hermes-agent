@@ -261,10 +261,15 @@ _MOUSE_TRACKING_ALIASES = {
 
 def _display_mouse_tracking(display: dict) -> str:
     """display.mouse_tracking → ``off|wheel|buttons|all`` (bools: True → all, False → off); ``wheel`` (DEC
-    1000+1006) is the tmux-friendly subset without hover events. Legacy ``tui_mouse`` only when ``mouse_tracking`` is absent."""
+    1000+1006) is the tmux-friendly subset without hover events. Legacy ``tui_mouse`` when ``mouse_tracking`` is absent or null (explicit null does not shadow legacy)."""
     if not isinstance(display, dict):
         return "all"
-    raw = display.get("mouse_tracking") if "mouse_tracking" in display else display.get("tui_mouse", True)
+    if "mouse_tracking" in display:
+        raw = display.get("mouse_tracking")
+        if raw is None:
+            raw = display.get("tui_mouse", True)
+    else:
+        raw = display.get("tui_mouse", True)
     if isinstance(raw, str):
         return _MOUSE_TRACKING_ALIASES.get(raw.strip().lower(), "all")
     return "off" if raw is False or raw == 0 else "all"
