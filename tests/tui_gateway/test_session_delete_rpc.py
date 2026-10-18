@@ -158,6 +158,33 @@ def test_session_delete_success_returns_deleted_id(monkeypatch):
     assert str(captured["sessions_dir"]).endswith("sessions")
 
 
+def test_session_delete_deletes_the_whole_compression_chain(monkeypatch):
+    """Deleting a compacted chat must take its whole compression chain with it.
+
+    A compacted conversation is a chain of rows and the desktop list renders
+    chain-*tip* ids, so deleting only the tip row leaves the earlier
+    continuations behind and the chat resurfaces on the next list (#57543 fixed
+    that for the dashboard; session.delete carried the same defect).
+    """
+    captured: dict = {}
+
+    class _DB(_NoOnboardingRun):
+        def delete_session(self, sid, sessions_dir=None, **kw):
+            captured["sid"] = sid
+            captured["kw"] = kw
+            return True
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.delete", "params": {"session_id": "tip-1"}}
+    )
+
+    assert "result" in resp, resp
+    assert captured["sid"] == "tip-1"
+    assert captured["kw"].get("include_compression_chain") is True
+
+
 
 
 # --------------------------------------------------------------------------

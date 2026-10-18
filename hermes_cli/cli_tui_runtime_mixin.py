@@ -531,7 +531,8 @@ class CLITuiRuntimeMixin:
                 # /exit --delete: remove transcripts + SQLite history.
                 try:
                     _sid = _closing_sid
-                    if self._session_db.delete_session(_sid, sessions_dir=get_hermes_home() / "sessions"):
+                    if self._session_db.delete_session(_sid, sessions_dir=get_hermes_home() / "sessions",
+                                                       include_compression_chain=True):
                         _cprint(f"  {_DIM}{t('cli.tui.session_deleted', session_id=_escape(_sid))}{_RST}")
                     else:
                         _cprint(f"  {_DIM}{t('cli.tui.session_delete_missing', session_id=_escape(_sid))}{_RST}")

@@ -260,7 +260,9 @@ def _session_browse_picker(sessions: list, session_db=None) -> Optional[str]:
         except Exception:
             sessions_dir = None
         try:
-            return bool(session_db.delete_session(session_id, sessions_dir=sessions_dir, exclude_active_write_guards=True))
+            return bool(session_db.delete_session(session_id, sessions_dir=sessions_dir,
+                                                  exclude_active_write_guards=True,
+                                                  include_compression_chain=True))
         except SessionActiveWriteGuardError:
             raise  # the browser tells the user the session is busy instead of a generic failure
         except Exception:

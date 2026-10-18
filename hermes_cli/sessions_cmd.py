@@ -634,7 +634,9 @@ def _cmd_delete(db, args):
         print(f"Warning: deleting a pinned session '{resolved_session_id}'.")
     from hermes_state_runtime import RuntimeStoreError
     try:
-        if not db.delete_session(resolved_session_id, sessions_dir=_sessions_dir(), exclude_active_write_guards=True):
+        if not db.delete_session(resolved_session_id, sessions_dir=_sessions_dir(),
+                                 exclude_active_write_guards=True,
+                                 include_compression_chain=True):
             return _not_found(args.session_id)
     except SessionActiveWriteGuardError as exc:
         print(f"Cannot delete active session: {exc}")

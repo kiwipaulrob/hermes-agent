@@ -262,7 +262,8 @@ def _discard_unfinished_runs(db, stored_ids: list[str]) -> None:
     for old in stored_ids:
         try:
             deleted = delete_chat(db, old, lambda old=old: db.delete_session(
-                old, sessions_dir=sessions_dir, exclude_active_write_guards=True))
+                old, sessions_dir=sessions_dir, exclude_active_write_guards=True,
+                include_compression_chain=True))
         except Exception:
             logger.exception("onboarding.start could not delete unfinished chat %s", old)
             deleted = False
