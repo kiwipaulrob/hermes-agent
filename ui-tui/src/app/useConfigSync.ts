@@ -87,12 +87,16 @@ const hasOwn = (obj: object, key: PropertyKey) => Object.prototype.hasOwnPropert
 // `wheel` enables 1000+1006 — scroll wheel + click only, no drag or hover,
 // which silences tmux's "No image in clipboard" spam over the prompt row.
 // `buttons` adds 1002 so terminal-side text selection drags still register.
-// Legacy `tui_mouse` is honored only if `mouse_tracking` is absent.
+// Legacy `tui_mouse` is honored when `mouse_tracking` is absent or null
+// (explicit null does not shadow legacy).
 export const normalizeMouseTracking = (display: {
   mouse_tracking?: unknown
   tui_mouse?: unknown
 }): MouseTrackingMode => {
-  const raw = hasOwn(display, 'mouse_tracking') ? display.mouse_tracking : display.tui_mouse
+  let raw = hasOwn(display, 'mouse_tracking') ? display.mouse_tracking : display.tui_mouse
+  if (hasOwn(display, 'mouse_tracking') && (raw === null || raw === undefined)) {
+    raw = display.tui_mouse
+  }
 
   if (raw === false || raw === 0) {
     return 'off'
