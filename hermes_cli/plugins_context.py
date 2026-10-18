@@ -179,7 +179,12 @@ class PluginContext(PluginCapabilityCtxMixin, PluginIdleTaskCtxMixin):
         handle = self._manager._track_scoped_registration(
             self.manifest, kind, registry_name, registry, provider, previous
         )
-        _facade().logger.info("Plugin '%s' registered %s: %s", self.manifest.name, label, registry_name)
+        key = (self.manifest.name, label, registry_name)
+        if not getattr(self, "_registered_provider_logged", None):
+            self._registered_provider_logged = set()
+        if key not in self._registered_provider_logged:
+            self._registered_provider_logged.add(key)
+            _facade().logger.info("Plugin '%s' registered %s: %s", self.manifest.name, label, registry_name)
         return handle
 
     @property
@@ -528,7 +533,9 @@ class PluginContext(PluginCapabilityCtxMixin, PluginIdleTaskCtxMixin):
         except ValueError as exc:
             _facade().logger.warning("Plugin '%s' context reference registration failed: %s", self.manifest.name, exc)
             return
-        _facade().logger.info("Plugin '%s' registered context reference: @%s:", self.manifest.name, provider.prefix)
+        if not getattr(self, "_context_registered", False):
+            self._context_registered = True
+            _facade().logger.info("Plugin '%s' registered context reference: @%s:", self.manifest.name, provider.prefix)
 
     def register_memory_provider(self, provider) -> None:
         """Record a memory provider (inert). Activation is owned by ``plugins/memory`` via
@@ -538,8 +545,10 @@ class PluginContext(PluginCapabilityCtxMixin, PluginIdleTaskCtxMixin):
         if self._wrong_type(provider, MemoryProvider, "memory provider"):
             return
         self._memory_provider = provider
-        _facade().logger.debug("Plugin '%s' registered memory provider: %s", self.manifest.name,
-                               getattr(provider, "name", "?"))
+        if not getattr(self, "_memory_registered", False):
+            self._memory_registered = True
+            _facade().logger.debug("Plugin '%s' registered memory provider: %s", self.manifest.name,
+                                   getattr(provider, "name", "?"))
 
     @_serialized_replacement
     def register_dashboard_auth_provider(self, provider) -> Optional[PluginRegistration]:
@@ -579,8 +588,10 @@ class PluginContext(PluginCapabilityCtxMixin, PluginIdleTaskCtxMixin):
             return
         handle = self._track("dashboard_auth_provider", registry_name,
                              lambda: unregister_global_provider(registry_name, provider), persistent=True)
-        _facade().logger.info("Plugin '%s' registered dashboard-auth provider: %s (%s)", self.manifest.name,
-                              registry_name, provider.display_name)
+        if not getattr(self, "_dashboard_auth_registered", False):
+            self._dashboard_auth_registered = True
+            _facade().logger.info("Plugin '%s' registered dashboard-auth provider: %s (%s)", self.manifest.name,
+                                  registry_name, provider.display_name)
         return handle
 
     @_serialized_replacement
