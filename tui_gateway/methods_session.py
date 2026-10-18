@@ -1087,8 +1087,8 @@ def _(rid, params: dict) -> dict:
         try:
             home = Path(profile_home) if profile_home is not None else get_hermes_home()
             deleted = delete_chat(db, target, lambda: _delete_unfinished_chat(
-                db, target, sessions_dir=home / "sessions", media_root=str(native_inputs_root()),
-                persistence=persistence), persistence=persistence)
+                db, target, sessions_dir=home / sessions, media_root=str(native_inputs_root()),
+                persistence=persistence, include_compression_chain=True), persistence=persistence)
         except SessionWriteGuarded:
             return _err(rid, 4023, "cannot delete an active session")
         except Exception as e:

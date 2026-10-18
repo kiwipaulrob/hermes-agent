@@ -290,7 +290,8 @@ def _discard_unfinished_runs(db, stored_ids: list[str], *, persistence=None) -> 
     for old in stored_ids:
         try:
             deleted = delete_chat(db, old, lambda old=old: _delete_unfinished_chat(
-                db, old, sessions_dir=sessions_dir, media_root=media_root, persistence=persistence),
+                db, old, sessions_dir=sessions_dir, media_root=media_root, persistence=persistence,
+                include_compression_chain=True),
                 persistence=persistence)
         except Exception:
             logger.exception("onboarding.start could not delete unfinished chat %s", old)
@@ -299,16 +300,19 @@ def _discard_unfinished_runs(db, stored_ids: list[str], *, persistence=None) -> 
             advance(db, old, End("replaced"), persistence=persistence)
 
 
-def _delete_unfinished_chat(db, session_id: str, *, sessions_dir, media_root: str, persistence=None) -> bool:
+def _delete_unfinished_chat(db, session_id: str, *, sessions_dir, media_root: str, persistence=None,
+                          include_compression_chain: bool = False) -> bool:
     """Delete *session_id* as ``session.delete`` does, refusing a chat under a live turn lease or compression lock;
     True when it existed. Through the writer handle beside *db*: the delete, then ``after_sessions_removed`` once it
     committed (the retired media under *media_root*, the transcript files under *sessions_dir*); else on *db*."""
     from agent.agent_init_session import writer_interface
     store = writer_interface(persistence, db)
     if store is None:
-        return db.delete_session(session_id, sessions_dir=sessions_dir, exclude_active_write_guards=True)
+        return db.delete_session(session_id, sessions_dir=sessions_dir, exclude_active_write_guards=True,
+                                 include_compression_chain=include_compression_chain)
     from session_retention import after_sessions_removed
-    removed = store.sessions.delete(session_id, refuse_guarded=True, media_root=media_root)
+    removed = store.sessions.delete(session_id, refuse_guarded=True, media_root=media_root,
+                                    include_compression_chain=include_compression_chain)
     after_sessions_removed(store, store.scope.profile_dir, removed, reason="delete", primary=session_id,
                            sessions_dir=sessions_dir)
     return bool(removed)
