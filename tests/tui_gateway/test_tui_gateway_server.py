@@ -9357,9 +9357,9 @@ def test_config_mouse_uses_documented_key_with_legacy_fallback(monkeypatch):
     get_null = server.handle_request(
         {"id": "4", "method": "config.get", "params": {"key": "mouse"}}
     )
-    # mouse_tracking present-but-None defers neither to tui_mouse nor to
-    # the legacy off bucket: it falls through to the 'all' default.
-    assert get_null["result"]["value"] == "all"
+    # mouse_tracking present-but-None falls back to tui_mouse (explicit null
+    # does not shadow legacy).
+    assert get_null["result"]["value"] == "off"
 
 
 def test_config_mouse_accepts_preset_strings_and_aliases(monkeypatch):
