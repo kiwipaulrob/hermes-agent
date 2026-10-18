@@ -710,7 +710,7 @@ def _cmd_delete(args, *, persistence=None):
     elif _pinned_note:
         print(f"Warning: deleting a pinned session '{resolved_session_id}'.")
     try:
-        if not _delete(persistence, resolved_session_id):
+        if not _delete(persistence, resolved_session_id, include_compression_chain=True):
             return _not_found(args.session_id)
     except SessionWriteGuarded as exc:
         print(f"Cannot delete active session: {exc}")

@@ -263,7 +263,8 @@ def _session_browse_picker(sessions: list, store=None) -> Optional[str]:
         try:
             from gateway.session_ingress_media import native_inputs_root
             from session_retention import after_sessions_removed
-            removed = store.sessions.delete(session_id, refuse_guarded=True, media_root=str(native_inputs_root()))
+            removed = store.sessions.delete(session_id, refuse_guarded=True, media_root=str(native_inputs_root()),
+                                            include_compression_chain=True)
             after_sessions_removed(store, store.scope.profile_dir, removed, reason="delete", primary=session_id,
                                    sessions_dir=sessions_dir)
             return bool(removed)
