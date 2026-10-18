@@ -369,7 +369,12 @@ class PluginContext:
         handle = self._manager._track_scoped_registration(
             self.manifest, kind, registry_name, registry, provider, previous
         )
-        logger.info("Plugin '%s' registered %s: %s", self.manifest.name, label, registry_name)
+        key = (self.manifest.name, label, registry_name)
+        if not getattr(self, "_registered_provider_logged", None):
+            self._registered_provider_logged = set()
+        if key not in self._registered_provider_logged:
+            self._registered_provider_logged.add(key)
+            logger.info("Plugin '%s' registered %s: %s", self.manifest.name, label, registry_name)
         return handle
 
     @property
@@ -728,7 +733,9 @@ class PluginContext:
         except ValueError as exc:
             logger.warning("Plugin '%s' context reference registration failed: %s", self.manifest.name, exc)
             return
-        logger.info("Plugin '%s' registered context reference: @%s:", self.manifest.name, provider.prefix)
+        if not getattr(self, "_context_registered", False):
+            self._context_registered = True
+            logger.info("Plugin '%s' registered context reference: @%s:", self.manifest.name, provider.prefix)
 
     def register_memory_provider(self, provider) -> None:
         """Record a memory provider (inert). Activation is owned by ``plugins/memory`` via
@@ -738,7 +745,9 @@ class PluginContext:
         if self._wrong_type(provider, MemoryProvider, "memory provider"):
             return
         self._memory_provider = provider
-        logger.debug("Plugin '%s' registered memory provider: %s", self.manifest.name,
+        if not getattr(self, "_memory_registered", False):
+            self._memory_registered = True
+            logger.debug("Plugin '%s' registered memory provider: %s", self.manifest.name,
                      getattr(provider, "name", "?"))
 
     @_serialized_replacement
@@ -779,8 +788,10 @@ class PluginContext:
             return
         handle = self._track("dashboard_auth_provider", registry_name,
                              lambda: unregister_global_provider(registry_name, provider), persistent=True)
-        logger.info("Plugin '%s' registered dashboard-auth provider: %s (%s)", self.manifest.name,
-                    registry_name, provider.display_name)
+        if not getattr(self, "_dashboard_auth_registered", False):
+            self._dashboard_auth_registered = True
+            logger.info("Plugin '%s' registered dashboard-auth provider: %s (%s)", self.manifest.name,
+                        registry_name, provider.display_name)
         return handle
 
     @_serialized_replacement
@@ -1386,7 +1397,8 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
             self._warn_python_dependencies(manifest)
             self._validate_plugin_config_schema(manifest)
             self._load_plugin(manifest)
-        if manifests:
+        if manifests and not getattr(self, "_discovery_complete", False):
+            self._discovery_complete = True
             logger.info("Plugin discovery complete: %d found, %d enabled", len(self._plugins),
                         sum(1 for p in self._plugins.values() if p.enabled))
 
