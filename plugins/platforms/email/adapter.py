@@ -454,8 +454,6 @@ class EmailAdapter(BasePlatformAdapter):
     # One email carries the whole body, so cron delivery hands over the full payload untruncated.
     splits_long_messages = True
 
-    splits_long_messages = True  # email has no practical length cap; the gateway must not truncate long sends
-
     # Per-account seen-UID snapshot surviving adapter recreation: the reconnect watcher builds a FRESH
     # adapter per retry; without this connect(is_reconnect=True) would re-mark the mailbox seen and skip
     # mail that arrived during the outage. Keyed by address (multiplex runs several accounts); same-process only.
