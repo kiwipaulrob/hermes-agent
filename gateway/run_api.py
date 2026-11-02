@@ -443,6 +443,19 @@ class GatewayRuntimeAPI:
                 or ws_host_origin_reason(ws, state) is not None or ws_client_reason(ws, state) is not None
                 or ws.headers.get('origin')
                 or not ws.client or ws.client.host not in {'127.0.0.1', '::1'}):
+            # A remote native client (no Origin header, non-loopback peer — e.g. a phone app behind a
+            # reverse proxy) can carry a webapp-issued ticket the dashboard gate knows how to consume.
+            # Hand those dials to the dashboard app instead of a silent 4403: valid tickets upgrade,
+            # everything else gets the normal audited rejection. All other refusals here are unchanged
+            # (including during a restart-wait drain), and local session-store tickets stay unusable
+            # remotely — the dashboard store cannot redeem them.
+            if (reason == 'ok' and not ws.headers.get('origin')
+                    and _embedded_chat_enabled()
+                    and ws_host_origin_reason(ws, state) is None
+                    and ws_client_reason(ws, state) is None
+                    and ws.client and ws.client.host not in {'127.0.0.1', '::1'}
+                    and not draining_socket):
+                return await self.app(scope, receive, send)
             await ws.close(code=4403)
             return
         operator = True
