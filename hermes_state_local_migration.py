@@ -1,4 +1,5 @@
 """Transactional legacy binding; never a second transcript writer."""
+import functools
 import json
 import time
 
@@ -15,6 +16,49 @@ LEGACY_PREFIX = 'gateway.local_legacy.v1:'
 LEGACY_LOCAL_SOURCES = frozenset({'cli', 'tui', 'gui', 'desktop', 'oneshot', 'tool', 'acp'})
 # Legacy labels that are not creation sources of their own (session_policy.SURFACES).
 LEGACY_CREATION_SOURCES = {'desktop': 'gui'}
+# Labels that never name a client chat app: automation and foreign-writer rows, messaging
+# platforms, and the local surface itself. Anything else a routeless row carries is a
+# client app's own label (phone apps signed in through the dashboard login: ``mobile``,
+# ``ios`` and the like).
+NOT_CLIENT_LABELS = frozenset({'cron', 'subagent', 'kanban', 'bot_room', 'a2a', 'webhook', 'api_server',
+                               'import', 'recovered', 'curator', 'batch', 'homeassistant', 'webui',
+                               'local', 'unknown'})
+
+
+@functools.lru_cache(maxsize=1)
+def _messaging_labels():
+    """Every platform Hermes ships: the enum and the bundled plugin platforms. A runtime-registered
+    catalog plugin (hermes-mobile's ``mobile``) is not in it: its rows are routed, which excludes them."""
+    from gateway.config import Platform
+    bundled, aliases = Platform._scan_bundled_plugin_platforms()
+    return frozenset({platform.value for platform in Platform} | set(bundled) | set(aliases))
+
+
+def not_client_labels():
+    """Labels :func:`client_label` refuses, for queries that pre-filter rows."""
+    return LEGACY_LOCAL_SOURCES | NOT_CLIENT_LABELS | _messaging_labels()
+
+
+def client_label(source):
+    """Whether *source* is a client app's own label (``mobile``, ``ios``): not a local surface, a
+    shipped messaging platform, or an automation / foreign-writer label."""
+    return isinstance(source, str) and bool(source.strip()) and source not in not_client_labels()
+
+
+def client_history_row(row):
+    """A chat a client app wrote under its own label before ``session.create`` took only surfaces.
+
+    The pre-authority ``hermes serve`` stored whatever ``source`` a client sent, so phone apps signed
+    in through the dashboard login left routeless rows labelled ``mobile``, ``ios`` and the like. They
+    are the owner's chats: adopted as writable conversations for their native owner
+    (gateway.session_local_migration.adopts_client_history). A routed row is never one, which keeps a
+    plugin platform sharing the label (hermes-mobile registers ``mobile``) on its messaging route."""
+    return client_label(row.get('source')) and not any(row.get(k) for k in ('session_key', 'chat_id', 'origin_json'))
+
+
+def legacy_history_row(row):
+    """Whether resume adopts *row* as old local history: a local surface's label, or a client app's."""
+    return row.get('source') in LEGACY_LOCAL_SOURCES or client_history_row(row)
 
 
 def legacy_account_label(row):
@@ -46,7 +90,7 @@ def validate_legacy_row(db, row, *, subject=None):
     # stamp equal to ``subject`` itself names that principal: it is already its history by
     # ``authorize_history``'s rule, so it adopts like an unstamped row.
     user_id = row.get('user_id')
-    if (row['source'] not in LEGACY_LOCAL_SOURCES
+    if (not legacy_history_row(row)
             or any(row.get(k) for k in ('session_key', 'chat_id', 'origin_json'))
             or (user_id and not legacy_account_label(row) and not login_owned_by(row, subject))
             or row.get('profile_name') not in (None, '', db._own_profile_name() or 'default')):
