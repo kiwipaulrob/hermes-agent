@@ -8654,7 +8654,8 @@
               "gui",
               "acp",
               "tool",
-              "oneshot"
+              "oneshot",
+              "desktop"
             ],
             "title": "Source",
             "type": "string"
@@ -8888,6 +8889,18 @@
             ],
             "default": null,
             "title": "Cwd Explicit"
+          },
+          "cols": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cols"
           },
           "run_budget": {
             "anyOf": [
@@ -11756,6 +11769,42 @@
             "default": false,
             "title": "Clarify Batch",
             "type": "boolean"
+          },
+          "truncate_before_row_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Truncate Before Row Id"
+          },
+          "confirm_truncate": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Confirm Truncate"
+          },
+          "confirm_empty_truncate": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Confirm Empty Truncate"
           }
         },
         "required": [

@@ -271,6 +271,12 @@ class CanonicalSubmitParams(CanonicalSessionParams):
     # The submitter answers the clarify tool's whole batch in one ``clarify`` server request (main's
     # batch panel); without it the turn's viewers get one ``clarify.request`` card per question.
     clarify_batch: bool = False
+    # A rewind-on-submit (the phone's Regenerate/Edit): cut the transcript to just
+    # before ``truncate_before_row_id``, then admit this prompt as its replacement
+    # turn. Consumed by the submit handler before admission; never stored.
+    truncate_before_row_id: int | None = None
+    confirm_truncate: bool | None = None
+    confirm_empty_truncate: bool | None = None
 
 
 class CanonicalVoiceStopped(Result):

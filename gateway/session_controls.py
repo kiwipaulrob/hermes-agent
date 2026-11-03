@@ -797,7 +797,83 @@ class AuthorityConnection:
                 replay['replay_epoch'], max((frame['seq'] for frame in replay['events']), default=sequence))
         return {**replay, 'open_requests': open_requests(stream, ref.session_id)}
 
+    async def _adopt_submitter(self, ref):
+        """Adopt an entitled submitter this socket never attached.
+
+        A fresh socket after a reconnect or a relogin submits with a runtime id the
+        gateway has no subscription for (the client's resume is still in flight, or
+        landed on the dropped socket). ``authorize`` runs first, so a stranger is
+        still refused exactly as before; only the attach formality is skipped for an
+        actor that could have resumed a moment earlier. Mirrors ``mutate``'s
+        branch adoption below. The transcript already came over REST, so the
+        adoption resume omits messages. Returns the ref the submit must use: a
+        compression continuation resumes on its lineage root, and the submit has
+        to name the same id the subscription was recorded under.
+        """
+        if ref.session_id in self.subscriptions:
+            return ref
+        self.authority.authorize(self.actor, ref, 'session:submit')
+        import logging as _logging
+        _logging.getLogger('gateway.phone_diag').info(
+            'HERMES-DIAG submit-adopted sid=%s', ref.session_id)
+        reply = await self.resume(ref, {'omit_messages': True})
+        resolved = reply.get('session_id') if isinstance(reply, dict) else None
+        if resolved and resolved != ref.session_id:
+            return SessionRef(ref.profile_id, resolved)
+        return ref
+
+    _TRUNCATE_KEYS = frozenset({'truncate_before_row_id', 'confirm_truncate', 'confirm_empty_truncate'})
+
+    async def _apply_submit_truncation(self, ref, params):
+        """Honor a rewind-on-submit (the phone's Regenerate/Edit): cut the transcript
+        to just before ``truncate_before_row_id``, then let the submit admit the new
+        prompt as its replacement turn. Fail-closed at every step — unconfirmed,
+        unresolvable, busy, or an empty-cut without ``confirm_empty_truncate`` all
+        refuse without touching the transcript. No truncate keys: no-op."""
+        if not any(key in params for key in self._TRUNCATE_KEYS):
+            return
+        if not params.get('confirm_truncate'):
+            # An unconfirmed cut is a client bug (a stale ordinal on an ordinary send
+            # would silently drop history): refuse, like the legacy prompt path.
+            raise RuntimeStoreError('invalid_params')
+        target = params.get('truncate_before_row_id')
+        if target is None or isinstance(target, bool) or not isinstance(target, int):
+            raise RuntimeStoreError('invalid_params')
+        live = self.authority.sessions.get(ref.session_id)
+        if live is None:
+            raise RuntimeStoreError('not_found')
+        if self.authority._handle(ref).execution_state == 'running':
+            raise RuntimeStoreError('session_busy')
+        rows = await asyncio.to_thread(
+            self.authority.db.get_messages_as_conversation, ref.session_id, include_row_ids=True)
+        ordinal, seen_users = None, 0
+        for row in rows:
+            if row.get('role') != 'user':
+                continue
+            if row.get('_row_id') == target:
+                ordinal = seen_users
+                break
+            seen_users += 1
+        if ordinal is None:
+            raise RuntimeStoreError('invalid_params')
+        if ordinal == 0 and not params.get('confirm_empty_truncate'):
+            raise RuntimeStoreError('invalid_params')
+        from hermes_state_rewind import RewindTargetUnavailableError
+        try:
+            await asyncio.to_thread(self.authority.db.rewind_user_turn, ref.session_id, ordinal)
+        except RewindTargetUnavailableError:
+            raise RuntimeStoreError('invalid_params')
+        import logging as _logging
+        _logging.getLogger('gateway.phone_diag').info(
+            'HERMES-DIAG submit-rewound sid=%s ordinal=%s', ref.session_id, ordinal)
+        evict = getattr(getattr(self.authority, 'runner', None), '_evict_cached_agent', None)
+        if callable(evict):
+            evict(live.route)
+
     async def submit(self, ref, params):
+        ref = await self._adopt_submitter(ref)
+        await self._apply_submit_truncation(ref, params)
+        params = {key: value for key, value in params.items() if key not in self._TRUNCATE_KEYS}
         if self._voice_stop_replay(ref, params) or await self._typed_voice_stop(ref, params):
             self._record_voice_stop(ref, params)
             return {'voice_stopped': True}
