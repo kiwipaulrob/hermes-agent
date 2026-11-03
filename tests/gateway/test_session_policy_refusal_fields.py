@@ -53,6 +53,10 @@ def _refusal(params, cfg=None, **kwargs):
     ({'source': 'acp', 'editor': {'bad\nkey': 1}}, 'editor.bad key'),  # client text: one line, no forged log line
     ({'source': 'cli', 'toolsets': [None]}, 'toolsets'),                # a literal None is the bad element
     ({'source': 'cli', 'toolsets': [False]}, 'toolsets'),
+    ({'source': 'cli', 'cols': 'wide'}, 'cols'),                       # renderer width is an int
+    ({'source': 'cli', 'cols': True}, 'cols'),                         # a bool is not a width
+    ({'source': 'cli', 'cols': 0}, 'cols'),                            # not a positive width
+    ({'source': 'cli', 'cols': -40}, 'cols'),
 ])
 def test_every_create_check_names_the_field_it_read(tmp_path, extra, field):
     refusal = _refusal({'cwd': str(tmp_path), **extra})
