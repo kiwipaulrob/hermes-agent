@@ -40,6 +40,34 @@ def test_policy_selects_surface_and_isolates_cwd(tmp_path):
             build_policy(params, {})
 
 
+def test_desktop_source_folds_to_gui_and_cols_is_accepted(tmp_path):
+    """Kyllene/the phone creates with ``source=desktop`` + ``cols`` (renderer width); the
+    create gate refused both, so no phone chat could be created. ``desktop`` is the stored
+    label of ``gui`` (SURFACE_GROUPS treats them as the same rows), so it folds to a
+    first-class gui chat — daybreak labels, pickers and the stored request included."""
+    import json
+
+    from gateway.session_policy import build_policy
+
+    cfg = {'platform_toolsets': {'cli': ['terminal']}}
+    cwd = tmp_path / 'phone'
+    cwd.mkdir()
+    caller = {'source': 'desktop', 'cols': 122, 'cwd': str(cwd)}
+    policy = build_policy(caller, cfg)
+    assert policy.source == 'gui'
+    assert policy.platform == 'desktop'
+    assert 'desktop_ui' in policy.toolsets
+    stored = json.loads(policy.request_json)
+    assert stored['source'] == 'gui'
+    assert stored['cols'] == 122
+    # The caller's dict is not mutated: the fold is local to the policy build.
+    assert caller == {'source': 'desktop', 'cols': 122, 'cwd': str(cwd)}
+    # An omitted cols is fine too.
+    policy2 = build_policy({'source': 'desktop', 'cwd': str(cwd)}, cfg)
+    assert policy2.source == 'gui'
+    assert 'cols' not in json.loads(policy2.request_json)
+
+
 @pytest.mark.asyncio
 async def test_launch_options_reach_the_owner_frozen_and_hooks_consented(tmp_path, monkeypatch):
     """`-s/--skills`, `--checkpoints`, `--pass-session-id`, `--accept-hooks` (and an exported
