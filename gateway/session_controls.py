@@ -333,6 +333,10 @@ class AuthorityConnection:
         if contract is not None and (problems := canonical_param_problems(contract, params)):
             # The declared wire contract (``tui_gateway/contracts/canonical.py``) is the closed
             # key set: an unknown or missing key never reaches the handler.
+            import logging as _logging
+            _logging.getLogger('gateway.phone_diag').warning(
+                'HERMES-DIAG contract-refused method=%s params_keys=%s problems=%s', method,
+                sorted(params), problems)
             return {'jsonrpc': '2.0', 'id': rid, 'error': {
                 'code': 4001, 'message': 'invalid_params', 'data': {'reason': 'invalid_params', 'fields': problems}}}
         original_params = dict(params)
@@ -856,6 +860,10 @@ class AuthorityConnection:
     def submission(self, ref, params):
         """The admission a ``prompt.submit``-shaped request asks for (``prompt.replace_queued`` too)."""
         if ref.session_id not in self.subscriptions:
+            import logging as _logging
+            _logging.getLogger('gateway.phone_diag').warning(
+                'HERMES-DIAG submit-not-subscribed sid=%s have=%s', ref.session_id,
+                sorted(self.subscriptions))
             raise RuntimeStoreError('permission_denied')
         forbidden = set(params) - {'session_id', 'text', 'submission_id', 'input_id', 'queued', 'attachments', 'finite', 'unattended',
                                    'surface', 'voice_context', 'interrupted', 'voice_turn', 'display_kind', 'title_preview',

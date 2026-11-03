@@ -204,8 +204,16 @@ class SessionAuthority:
         from gateway.session_authorities import require_serving
         require_serving(self)
         if actor.profile_id != self.profile_id or ref.profile_id != self.profile_id:
+            import logging as _logging
+            _logging.getLogger('gateway.phone_diag').warning(
+                'HERMES-DIAG authorize-denied why=profile_mismatch actor_profile=%s ref_profile=%s authority=%s caps=%s',
+                actor.profile_id, ref.profile_id, self.profile_id, sorted(actor.capabilities))
             raise RuntimeStoreError('profile_mismatch')
         if capability not in actor.capabilities:
+            import logging as _logging
+            _logging.getLogger('gateway.phone_diag').warning(
+                'HERMES-DIAG authorize-denied why=permission_denied need=%s have=%s subject=%s sid=%s',
+                capability, sorted(actor.capabilities), actor.subject, ref.session_id)
             raise RuntimeStoreError('permission_denied')
         if ref.session_id not in self.sessions:
             row = self.db.get_session(ref.session_id)
