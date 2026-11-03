@@ -4999,7 +4999,7 @@ export type WorkerPersistResult = Record<string, unknown>
 export interface CanonicalCreateParams {
   profile?: string | null
   request_id?: string | null
-  source?: 'cli' | 'tui' | 'gui' | 'acp' | 'tool' | 'oneshot'
+  source?: 'cli' | 'tui' | 'gui' | 'acp' | 'tool' | 'oneshot' | 'desktop'
   cwd?: string | null
   row_cwd?: string | null
   model?: string | null
@@ -5023,6 +5023,7 @@ export interface CanonicalCreateParams {
   follow_profile_config?: boolean | null
   service_tier?: string | null
   cwd_explicit?: boolean | null
+  cols?: number | null
   run_budget?: number | null
   verbose?: boolean
   client_env?: Record<string, string> | null
@@ -5230,6 +5231,9 @@ export interface CanonicalSubmitParams {
   api_text?: string | null
   model_override?: CanonicalModelOverride | null
   clarify_batch?: boolean
+  truncate_before_row_id?: number | null
+  confirm_truncate?: boolean | null
+  confirm_empty_truncate?: boolean | null
 }
 export interface CanonicalAttachment {
   path: string
