@@ -20,7 +20,10 @@ class CanonicalSessionParams(ProfileParams):
 
 class CanonicalCreateParams(ProfileParams):
     request_id: str | None = None
-    source: Literal['cli', 'tui', 'gui', 'acp', 'tool', 'oneshot'] = 'cli'
+    # 'desktop' is a first-party surface (Desktop, the dashboard chat, and the phone app
+    # speak it as CLIENT_SOURCE); the row stores it verbatim and no launch switch keys
+    # off it, so accepting it here is parity with CanonicalResumeParams' free-form source.
+    source: Literal['cli', 'tui', 'gui', 'acp', 'tool', 'oneshot', 'desktop'] = 'cli'
     cwd: str | None = None
     # The sessions-row ``cwd`` when it differs from the execution ``cwd`` (the classic CLI records
     # main's stamp: the launch dir, ``""`` = none); ``cwd`` stays where the tools run.
@@ -46,6 +49,9 @@ class CanonicalCreateParams(ProfileParams):
     follow_profile_config: bool | None = None
     service_tier: str | None = None
     cwd_explicit: bool | None = None
+    # Phone/desktop renderer width (parity with CanonicalResumeParams.cols); accepted and
+    # stored with the request, the agent formats from the profile, not from this.
+    cols: int | None = None
     # Wall-clock budget per run in seconds (the classic CLI's `--run-budget`).
     run_budget: float | None = None
     # The classic CLI's `-v`: the session agent's status lines are not quieted.
