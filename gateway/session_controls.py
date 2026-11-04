@@ -98,6 +98,14 @@ _PROFILE_IMPLICIT = frozenset({'session.create', 'session.list', 'session.info',
                                'prompt.steer_queued', 'prompt.replace_queued',
                                'session.interrupt', 'session.events.since', 'session.mutate', 'session.stats',
                                'approval.respond', 'clarify.respond'})
+# Session-scoped ancillary polls some clients send without ``profile`` (they resume
+# with one but poll without): ``session.control.read``, ``process.list``,
+# ``subagent.list``, ``subagent.tail`` hit the same wrong-authority ``not_found`` as
+# the verbs above. Routed, never stripped: their contracts and handlers already
+# accept an explicit ``profile`` key when present, so membership here changes nothing
+# for callers that send one.
+_SIBLING_ROUTED_SESSION_POLLS = frozenset({
+    'session.control.read', 'process.list', 'subagent.list', 'subagent.tail'})
 
 
 def display_projection(history, profile_home):
@@ -197,6 +205,43 @@ class AuthorityConnection:
             # answers one whose wait ran out.
             raise RuntimeStoreError('runtime_draining', field='profile', detail='the profile is still starting')
         raise RuntimeStoreError('profile_mismatch')
+
+    def _sibling_for_live_session(self, sid):
+        """Connection bound to the sibling authority holding live runtime session *sid*, or None.
+
+        Some clients (the Herald phone app) resume with ``profile`` yet send later
+        session verbs without one; run in the default scope, ``authorize()`` finds
+        neither the live session nor a stored row and refuses a bare ``not_found``.
+        When our own home holds no such live session but exactly one sibling does,
+        serve the verb there instead. Host-scoped grants only (the dashboard gate,
+        the Desktop's shared-primary socket) — a profile-bound ticket stays put.
+        Live sessions only: a stored-but-detached row still needs a profiled resume
+        first. Ambiguous (several siblings hold it) or unknown ids keep the local
+        verdict, as does our own home holding it.
+        """
+        if not isinstance(sid, str) or not sid or not self.host_scoped:
+            return None
+        if sid in getattr(self.authority, 'sessions', {}):
+            return None
+        registry = getattr(getattr(self.authority, 'runner', None), 'session_authorities', None)
+        found = None
+        for sibling in (registry or ()):
+            if sibling is self.authority:
+                continue
+            try:
+                live = sid in getattr(sibling, 'sessions', {})
+            except Exception:
+                continue
+            if live:
+                if found is not None:
+                    return None  # held twice: keep the local verdict, never guess
+                found = sibling
+        if found is None:
+            return None
+        import logging as _logging
+        _logging.getLogger('gateway.phone_diag').info(
+            'HERMES-DIAG session-routed sid=%s profile=%s', sid, found.profile_id)
+        return self._sibling_for(found.profile_id)
 
     def awaits_profile_start(self, request, held=()):
         """Whether a shared socket holds *request* off its serial lane: ``(key, started)`` when a
@@ -316,6 +361,13 @@ class AuthorityConnection:
             # unknown keys; every other handler validates ``profile`` itself.
             if method in _PROFILE_IMPLICIT:
                 params = {key: value for key, value in params.items() if key != 'profile'}
+        if method in _PROFILE_IMPLICIT or method in _SIBLING_ROUTED_SESSION_POLLS:
+            # A profile-less session verb naming a runtime session another profile
+            # holds: serve it where the session lives instead of answering a
+            # stranger's ``not_found``.
+            routed = self._sibling_for_live_session(params.get('session_id'))
+            if routed is not None:
+                return await routed.dispatch(request)
         ref = SessionRef(self.actor.profile_id, params.get('session_id', ''))
         from tui_gateway.contracts.registry import (
             CANONICAL_METHODS, METHODS, canonical_param_problems, check_params_accepted, check_result,
