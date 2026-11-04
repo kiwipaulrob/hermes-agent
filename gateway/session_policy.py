@@ -17,7 +17,7 @@ CREATE_FIELDS = frozenset({'request_id', 'source', 'cwd', 'model', 'toolsets',
                            'yolo', 'safe_mode', 'ignore_user_config',
                            'skills', 'checkpoints', 'accept_hooks', 'pass_session_id', 'follow_profile_config',
                            'service_tier', 'cwd_explicit', 'run_budget', 'verbose', 'row_cwd', 'client_env',
-                           'cols'})
+                           'cols', 'reasoning_effort', 'fast', 'messages'})
 # Sections a ``follow_profile_config`` session re-reads from the owning profile's CURRENT config each
 # turn (main's Bot Chat row), credentials included: a frozen key never crosses a profile route change.
 FOLLOW_SECTIONS = ('model', 'providers', 'custom_providers', 'fallback_providers', 'fallback_model', 'model_aliases',
@@ -443,6 +443,11 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True,
         # Phone/desktop renderer width (parity with CanonicalResumeParams.cols): accepted
         # and stored with the request; the agent formats from the profile, not from this.
         _refuse('cols', 'must be a positive integer when set')
+    if params.get('messages') is not None and not isinstance(params['messages'], list):
+        # Seeded first rows (Kyllene standing instruction, Desktop onboarding runbook):
+        # the create handler coerces rows (`_coerce_seed_history`); the gate checks
+        # only the envelope, never the rows.
+        _refuse('messages', 'must be a list of message rows')
     bad_bypass = next((name for name in BYPASS_FIELDS if name in params and type(params[name]) is not bool), None)
     if bad_bypass:
         _refuse(bad_bypass, 'must be a boolean')
@@ -626,6 +631,13 @@ def _apply_launch_overrides(params, config):
                      if flag in params and type(params[flag]) is not bool), None)
     if bad_flag:
         _refuse(bad_flag, 'must be a boolean')
+    if 'fast' in params:
+        # Kyllene/the phone's create-time speed pick (its Fast toggle): true pins priority,
+        # false pins normal (``SessionCreateParams.fast``: presence is the contract, omitted
+        # inherits). An explicit `service_tier` below still wins — it names the tier exactly.
+        if type(params['fast']) is not bool:
+            _refuse('fast', 'must be a boolean')
+        config.setdefault('agent', {})['service_tier'] = 'priority' if params['fast'] else 'normal'
     if 'service_tier' in params:
         # An explicit speed pick (Desktop Fast / Ultrafast / Normal): normal pins normal over a
         # profile tier; an unknown word is refused, never read as normal.
@@ -656,6 +668,13 @@ def _apply_launch_overrides(params, config):
         if not limit:
             _refuse('max_turns', f'unreadable cap: {value!r}')
         config.setdefault('agent', {})['max_turns'] = limit
+    if 'reasoning_effort' in params:
+        # Kyllene/the phone names the pick `reasoning_effort` (the classic CLI says
+        # `reasoning`); same levels, same pin. `reasoning` below runs second so an
+        # explicit CLI word still wins when both name a level.
+        if not isinstance(params['reasoning_effort'], str) or parse_reasoning_effort(params['reasoning_effort']) is None:
+            _refuse('reasoning_effort', f"not a known effort level: {params['reasoning_effort']!r}")
+        pin_reasoning_effort(config, params['reasoning_effort'])
     if 'reasoning' in params:
         if not isinstance(params['reasoning'], str) or parse_reasoning_effort(params['reasoning']) is None:
             _refuse('reasoning', f"not a known effort level: {params['reasoning']!r}")

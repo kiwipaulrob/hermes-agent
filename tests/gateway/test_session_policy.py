@@ -547,3 +547,53 @@ def test_verbose_is_a_frozen_launch_option(tmp_path):
     assert build_policy(dict(cwd=str(tmp_path)), {}).verbose is False
     with pytest.raises(RuntimeStoreError, match='invalid_params'):
         build_policy(dict(cwd=str(tmp_path), verbose='yes'), {})
+
+
+def test_phone_settings_pass_create_and_pin_the_session(tmp_path):
+    """Kyllene's full create shape: a picked reasoning level (`reasoning_effort`), the Fast
+    toggle (`fast`), and a standing instruction (`messages[]` seed rows). The canonical
+    contract refused all three before the policy saw them (silent `invalid_params` on every
+    new phone chat with any of them set); the handler already honors seed rows
+    (`_coerce_seed_history`) and the CLI twins of the other two, so the canonical model
+    and the policy now match `SessionCreateParams`/the launch overrides instead of the
+    client dropping its settings."""
+    from gateway.session_policy import build_policy
+    from hermes_state_runtime import RuntimeStoreError
+
+    cwd = str(tmp_path)
+    assert build_policy(dict(cwd=cwd, reasoning_effort='high'), {}).config()['agent']['reasoning_effort'] == 'high'
+    assert build_policy(dict(cwd=cwd, fast=True), {}).config()['agent']['service_tier'] == 'priority'
+    assert build_policy(dict(cwd=cwd, fast=False), {}).config()['agent']['service_tier'] == 'normal'
+    # An explicit tier names the tier exactly, so it still wins over the toggle.
+    assert build_policy(dict(cwd=cwd, fast=True, service_tier='normal'), {}).config()['agent']['service_tier'] == 'normal'
+    # The CLI word wins when both name a level.
+    assert build_policy(dict(cwd=cwd, reasoning_effort='low', reasoning='high'), {}).config()['agent']['reasoning_effort'] == 'high'
+    # Seed rows ride to the handler untouched; the gate checks only the envelope.
+    seed = [{'role': 'user', 'content': 'follow me', 'display_kind': 'hidden'}]
+    build_policy(dict(cwd=cwd, source='desktop', cols=80, messages=seed), {})
+    for bad in (dict(reasoning_effort='ludicrous'), dict(reasoning_effort=5),
+                dict(fast='yes'), dict(messages={'role': 'user'})):
+        with pytest.raises(RuntimeStoreError, match='invalid_params'):
+            build_policy(dict(bad, cwd=cwd), {})
+
+
+def test_phone_create_shapes_pass_the_session_create_contract():
+    """Every Kyllene `session.create` shape clears the canonical dispatcher: minimal, a
+    pre-picked model, a reasoning pick, the Fast toggle, and a seeded standing instruction."""
+    from tui_gateway.contracts.registry import CANONICAL_METHODS, canonical_param_problems
+    from gateway.session_policy import CREATE_FIELDS
+    contract = CANONICAL_METHODS['session.create']
+    base = {'source': 'desktop', 'cols': 122}
+    shapes = [
+        base,
+        dict(base, model='m', provider='p'),
+        dict(base, reasoning_effort='high'),
+        dict(base, fast=True),
+        dict(base, messages=[{'role': 'user', 'content': 'x', 'display_kind': 'hidden'}]),
+        dict(base, model='m', provider='p', reasoning_effort='low', fast=False,
+             messages=[{'role': 'user', 'content': 'x', 'display_kind': 'hidden'}]),
+    ]
+    for shape in shapes:
+        assert canonical_param_problems(contract, shape) == [], shape
+    declared = set(contract.params.model_fields)
+    assert CREATE_FIELDS <= declared | {'request_id'}, CREATE_FIELDS - declared
