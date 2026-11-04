@@ -204,6 +204,41 @@ class AuthorityConnection:
             raise RuntimeStoreError('runtime_draining', field='profile', detail='the profile is still starting')
         raise RuntimeStoreError('profile_mismatch')
 
+    def _sibling_for_live_session(self, sid):
+        """Connection bound to the sibling authority holding live runtime session *sid*, or None.
+
+        A profile-less session verb names its target but not its scope (the phone resumes
+        with ``profile`` yet submits without); when our own home holds no such live session
+        but exactly one sibling does, serve the verb there instead of refusing ``not_found``.
+        Host-scoped grants only (the dashboard gate, the Desktop's shared-primary socket) —
+        a profile-bound ticket stays put. Live sessions only: a stored-but-detached row still
+        needs a profiled resume first. Ambiguous (several siblings hold it) or unknown ids
+        keep the local verdict, as does our own home holding it.
+        """
+        if not isinstance(sid, str) or not sid or not self.host_scoped:
+            return None
+        if sid in getattr(self.authority, 'sessions', {}):
+            return None
+        registry = getattr(getattr(self.authority, 'runner', None), 'session_authorities', None)
+        found = None
+        for sibling in (registry or ()):
+            if sibling is self.authority:
+                continue
+            try:
+                live = sid in getattr(sibling, 'sessions', {})
+            except Exception:
+                continue
+            if live:
+                if found is not None:
+                    return None  # held twice: keep the local verdict, never guess
+                found = sibling
+        if found is None:
+            return None
+        import logging as _logging
+        _logging.getLogger('gateway.phone_diag').info(
+            'HERMES-DIAG session-routed sid=%s profile=%s', sid, found.profile_id)
+        return self._sibling_for(found.profile_id)
+
     def awaits_profile_start(self, request, held=()):
         """Whether a shared socket holds *request* off its serial lane: ``(key, started)`` when a
         host-scoped frame names a profile hot-serve is still building (``started`` is set once the
@@ -324,6 +359,13 @@ class AuthorityConnection:
             # unknown keys; every other handler validates ``profile`` itself.
             if method in _PROFILE_IMPLICIT:
                 params = {key: value for key, value in params.items() if key != 'profile'}
+        if method in _PROFILE_IMPLICIT:
+            # A profile-less session verb naming a runtime session another profile holds
+            # (the phone resumes with ``profile`` but submits without): serve it where the
+            # session lives instead of answering a stranger's ``not_found``.
+            routed = self._sibling_for_live_session(params.get('session_id'))
+            if routed is not None:
+                return await routed.dispatch(request)
         ref = SessionRef(self.actor.profile_id, params.get('session_id', ''))
         from tui_gateway.contracts.registry import (
             CANONICAL_METHODS, METHODS, canonical_param_problems, check_params_accepted, check_result,
@@ -948,7 +990,15 @@ class AuthorityConnection:
             raise RuntimeStoreError('invalid_params')
         request_id = params.get('submission_id') or params.get('input_id')
         if not isinstance(request_id, str) or not request_id:
-            raise RuntimeStoreError('invalid_params')
+            # The phone's minimal submit carries no client admission id (desktop and the
+            # owner's forwarder always send ``submission_id``). Mint one so the admitted
+            # shape the wire contract accepts stays serviceable; a fresh uuid keeps the
+            # replay/voice-stop identity unique per admission.
+            import logging as _logging
+            from uuid import uuid4
+            request_id = f"phone-{uuid4().hex}"
+            _logging.getLogger('gateway.phone_diag').info(
+                'HERMES-DIAG submit-minted-id sid=%s', ref.session_id)
         from gateway.session_finite import admit_finite
         from gateway.session_display import submit_display_fields
         from gateway.session_surface import submit_surface_fields
