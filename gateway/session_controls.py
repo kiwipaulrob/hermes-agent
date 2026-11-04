@@ -98,6 +98,14 @@ _PROFILE_IMPLICIT = frozenset({'session.create', 'session.list', 'session.info',
                                'prompt.steer_queued', 'prompt.replace_queued',
                                'session.interrupt', 'session.events.since', 'session.mutate', 'session.stats',
                                'approval.respond', 'clarify.respond'})
+# Session-scoped ancillary polls the phone sends without ``profile`` (it resumes with
+# ``profile`` but polls without): ``session.control.read``, ``process.list``,
+# ``subagent.list``, ``subagent.tail`` hit the same wrong-authority ``not_found`` as the
+# verbs above. Routed, never stripped: their contracts and handlers already accept an
+# explicit ``profile`` key when present, so membership here changes nothing for callers
+# that send one.
+_SIBLING_ROUTED_SESSION_POLLS = frozenset({
+    'session.control.read', 'process.list', 'subagent.list', 'subagent.tail'})
 
 
 def display_projection(history, profile_home):
@@ -351,10 +359,10 @@ class AuthorityConnection:
             # unknown keys; every other handler validates ``profile`` itself.
             if method in _PROFILE_IMPLICIT:
                 params = {key: value for key, value in params.items() if key != 'profile'}
-        if method in _PROFILE_IMPLICIT:
+        if method in _PROFILE_IMPLICIT or method in _SIBLING_ROUTED_SESSION_POLLS:
             # A profile-less session verb naming a runtime session another profile holds
-            # (the phone resumes with ``profile`` but submits without): serve it where the
-            # session lives instead of answering a stranger's ``not_found``.
+            # (the phone resumes with ``profile`` but submits and polls without): serve it
+            # where the session lives instead of answering a stranger's ``not_found``.
             routed = self._sibling_for_live_session(params.get('session_id'))
             if routed is not None:
                 return await routed.dispatch(request)
