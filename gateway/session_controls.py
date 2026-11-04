@@ -825,7 +825,15 @@ class AuthorityConnection:
             raise RuntimeStoreError('invalid_params')
         request_id = params.get('submission_id') or params.get('input_id')
         if not isinstance(request_id, str) or not request_id:
-            raise RuntimeStoreError('invalid_params')
+            # Some clients (the Herald phone app) submit the contract-admitted minimal
+            # shape ``{session_id, text}`` with no client admission id. Mint one so the
+            # admitted shape stays serviceable; a fresh uuid keeps the replay/voice-stop
+            # identity unique per admission.
+            import logging as _logging
+            from uuid import uuid4
+            request_id = f"phone-{uuid4().hex}"
+            _logging.getLogger('gateway.phone_diag').info(
+                'HERMES-DIAG submit-minted-id sid=%s', ref.session_id)
         from gateway.session_finite import admit_finite
         from gateway.session_display import submit_display_fields
         from gateway.session_surface import submit_surface_fields
