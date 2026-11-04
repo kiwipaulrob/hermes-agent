@@ -9,7 +9,7 @@ from pydantic import RootModel
 from .base import JsonValue, Params, Result
 from .common import ProfileParams, TranscriptMessage
 from .connectors_operation import ConnectionRequestPayload
-from .sessions import OpenRequestEntry, TodoState
+from .sessions import OpenRequestEntry, SeedMessage, TodoState
 from .canonical import (AdmissionStatus, CanonicalClientLabel, CanonicalSessionRef, PromptResponseResult,
                         SessionInventoryFields)
 from .registry import canonical_method
@@ -61,6 +61,14 @@ class CanonicalCreateParams(ProfileParams):
     # Phone/desktop renderer width (parity with CanonicalResumeParams.cols); accepted and
     # stored with the request, the agent formats from the profile, not from this.
     cols: int | None = None
+    # The phone's create-time settings (parity with SessionCreateParams): a picked
+    # reasoning level (the phone says `reasoning_effort`, the CLI `reasoning`), the Fast
+    # toggle (true pins priority, false pins normal — presence is the contract, omitted
+    # inherits), and a standing instruction as seed rows (the create handler coerces via
+    # `_coerce_seed_history`).
+    reasoning_effort: str | None = None
+    fast: bool | None = None
+    messages: list[SeedMessage] | None = None
     # Wall-clock budget per run in seconds (the classic CLI's `--run-budget`).
     run_budget: float | None = None
     # The classic CLI's `-v`: the session agent's status lines are not quieted.
