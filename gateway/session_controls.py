@@ -190,6 +190,11 @@ class AuthorityConnection:
         reaches a sibling; a profile-bound ticket naming any other profile is a mismatch, exactly
         like a profile nobody here serves. Never a fallback, never a rewritten profile_id."""
         from hermes_cli.profiles import profile_matches_home
+        if isinstance(profile, str) and ('/' in profile or '\\' in profile):
+            # A stored home path, never a wire name (sibling authorities key profile_id by
+            # home dir): resolve it to the name every gate below matches on. Unresolvable
+            # paths stay unresolvable and fall through to ``profile_mismatch`` as before.
+            profile = profile_name_for_home(profile) or Path(profile).name
         if profile_matches_home(profile, Path(self.authority.profile_id)):
             return None
         if not self.host_scoped:
@@ -245,7 +250,10 @@ class AuthorityConnection:
         import logging as _logging
         _logging.getLogger('gateway.phone_diag').info(
             'HERMES-DIAG session-routed sid=%s profile=%s', sid, found.profile_id)
-        return self._sibling_for(found.profile_id)
+        # ``found.profile_id`` is the sibling's home path, never the wire name ``_sibling_for``
+        # matches on: hand over the short name (``profile_name_for_home`` owns the default-home
+        # ``.hermes``-basename edge; ``Path.name`` is only the fallback).
+        return self._sibling_for(profile_name_for_home(found.profile_id) or Path(found.profile_id).name)
 
     def awaits_profile_start(self, request, held=()):
         """Whether a shared socket holds *request* off its serial lane: ``(key, started)`` when a
