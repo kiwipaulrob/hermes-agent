@@ -235,8 +235,8 @@ def _resolve_skill_dir(name: str, category: str | None = None) -> Path:
 
 
 def _iter_skill_dirs(root: Path):
-    from agent.skill_utils import is_excluded_skill_path
-    for skill_md in root.rglob("SKILL.md"):
+    from agent.skill_utils import is_excluded_skill_path, iter_skill_index_files
+    for skill_md in iter_skill_index_files(root, "SKILL.md"):
         if not is_excluded_skill_path(skill_md):
             yield skill_md.parent
 
@@ -294,10 +294,22 @@ def _find_skill(name: str) -> Optional[dict[str, Any]]:
     for skills_dir in get_all_skills_dirs():
         if not skills_dir.exists():
             continue
+        try:
+            is_local_root = skills_dir.resolve() == local_root
+        except OSError:
+            is_local_root = False
         for skill_dir in _iter_skill_dirs(skills_dir):
             if skill_dir.name == name:
                 return {"path": skill_dir}
             if local_root is not None:
+                # Lexical match first: symlinked category dirs resolve outside
+                # the profile root (into canonical), so the resolved check
+                # below misses them even though the skill sits at
+                # <profile>/skills/<category>/<skill> lexically.
+                if is_local_root:
+                    with suppress(ValueError):
+                        if skill_dir.relative_to(skills_dir).as_posix() == name:
+                            return {"path": skill_dir}
                 resolved = skill_dir.resolve()
                 if (resolved.is_relative_to(local_root)
                         and resolved.relative_to(local_root).as_posix() == name):  # POSIX form
